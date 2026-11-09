@@ -80,6 +80,15 @@ describe('lamps_list / lamp_info', () => {
     expect(beta).toMatchObject({ role: 'creator', online: true, state: { on: false } });
   });
 
+  it('lamp_info on an offline lamp is ok:false with a reason', async () => {
+    const t = await harness({ timeoutMs: 300 });
+    const w = await t.fake({ deviceId: 'hhhhhhhhhhhh', name: 'Wedged', hang: true });
+    t.fleet.upsert({ deviceId: 'hhhhhhhhhhhh', name: 'Wedged', host: '127.0.0.1', port: w.port, role: 'admin', shared: false, lastSeen: new Date().toISOString() });
+    const r = await t.call('lamp_info', { lamp: 'Wedged' });
+    expect(r).toMatchObject({ ok: false, name: 'Wedged', online: false });
+    expect(r.reason).toMatch(/timed out/);
+  });
+
   it('lamp_info returns fleet entry plus live /api', async () => {
     const t = await harness();
     await t.addFake({ deviceId: 'aaaaaaaaaaaa', name: 'Alpha', grid: { w: 16, h: 16 } });
@@ -184,6 +193,50 @@ describe('lamps_discover', () => {
     const r2 = await t.call('lamps_discover');
     expect(r2.known).toEqual([expect.objectContaining({ deviceId: 'oooooooooooo' })]);
     expect(r2.added).toEqual([]);
+  });
+});
+
+describe('swarms_list read classification', () => {
+  it('a creator lamp is unknown: no /api/swarm request, not solo, not unreachable', async () => {
+    const t = await harness();
+    const l = await t.addFake({ deviceId: 'cccccccccccc', name: 'Shelf', role: 'creator', swarmId: 'sw1' });
+    expect(l.state.requests.some((x) => x.path === '/api/swarm')).toBe(false); // not even on add
+    const r = await t.call('swarms_list');
+    expect(r.unknown.map((x: any) => x.name)).toEqual(['Shelf']);
+    expect(r.solo).toEqual([]);
+    expect(r.swarms).toEqual([]);
+    expect(r.unreachable).toBeUndefined();
+    expect(l.state.requests.some((x) => x.path === '/api/swarm')).toBe(false);
+  });
+
+  it('a 403 on the swarm read (key edited since) counts as unknown', async () => {
+    const t = await harness();
+    const l = await t.addFake({ deviceId: 'ai0000000009', name: 'Desk', role: 'ai', perms: ['swarm'], swarmId: 'sw1' });
+    l.state.perms = [];
+    const r = await t.call('swarms_list');
+    expect(r.unknown.map((x: any) => x.name)).toEqual(['Desk']);
+    expect(r.swarms).toEqual([]);
+    expect(r.unreachable).toBeUndefined();
+  });
+
+  it('a 404 (firmware without swarm) counts as solo', async () => {
+    const t = await harness();
+    const l = await t.addFake({ deviceId: 'aaaaaaaaaaaa', name: 'Old', swarmId: 'sw1' });
+    l.state.swarm = null;
+    const r = await t.call('swarms_list');
+    expect(r.solo.map((x: any) => x.name)).toEqual(['Old']);
+    expect(r.swarms).toEqual([]);
+    expect(r.unreachable).toBeUndefined();
+    expect(t.fleet.get('Old')!.swarmId).toBeNull();
+  });
+
+  it('only a timeout / unreachable lamp is unreachable, shown with its last known swarm', async () => {
+    const t = await harness({ timeoutMs: 300 });
+    const w = await t.fake({ deviceId: 'hhhhhhhhhhhh', name: 'Wedged', hang: true });
+    t.fleet.upsert({ deviceId: 'hhhhhhhhhhhh', name: 'Wedged', host: '127.0.0.1', port: w.port, role: 'admin', swarmId: 'sw2', shared: false, lastSeen: new Date().toISOString() });
+    const r = await t.call('swarms_list');
+    expect(r.unreachable).toEqual(['Wedged']);
+    expect(r.swarms).toEqual([{ swarmId: 'sw2', members: [expect.objectContaining({ name: 'Wedged' })] }]);
   });
 });
 

@@ -153,6 +153,23 @@ describe('Registry', () => {
     expect(() => reg.resolveTargets(['zz'])).toThrow(/unknown lamp: zz/);
   });
 
+  it('forget removes the fleet entry first and keeps it gone when deleting the secret fails', async () => {
+    const dir = tmp();
+    const fleet = new FleetStore(dir);
+    const order: string[] = [];
+    const secrets = {
+      get: async () => undefined, set: async () => {},
+      delete: async () => { order.push(`delete:${fleet.get('aabbccddeeff') ? 'present' : 'gone'}`); throw new Error('keychain: security delete-generic-password failed (exit 1)'); },
+    };
+    const reg = new Registry(fleet, secrets, async () => undefined);
+    cleanup.push(() => reg.close());
+    fleet.upsert({ deviceId: 'aabbccddeeff', name: 'Kitchen', host: '127.0.0.1', port: 1, role: 'ai', shared: true, lastSeen: '' });
+    const r = await reg.forget('aabbccddeeff');
+    expect(order).toEqual(['delete:gone']);
+    expect(r.secretError).toMatch(/delete-generic-password/);
+    expect(new FleetStore(dir).get('aabbccddeeff')).toBeUndefined();
+  });
+
   it('client() rejects an unknown lamp', async () => {
     const { reg } = setup();
     await expect(reg.client('nope')).rejects.toThrow(/unknown lamp: nope/);

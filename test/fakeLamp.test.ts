@@ -23,7 +23,9 @@ const ROWS: Row[] = [
   W({ role: 'creator', method: 'POST', path: '/api/name', body: { name: 'n' }, status: 403, text: 'insufficient role' }),
   W({ role: 'admin', method: 'POST', path: '/api/name', body: { name: 'n' }, status: 200 }),
   W({ role: 'creator', method: 'POST', path: '/api/ota', body: 'x', status: 403 }),
-  W({ role: 'user', method: 'GET', path: '/api/swarm', status: 200 }),
+  W({ role: 'user', method: 'GET', path: '/api/swarm', status: 403, text: 'insufficient role' }),
+  W({ role: 'creator', method: 'GET', path: '/api/swarm', status: 403, text: 'insufficient role' }),
+  W({ role: 'admin', method: 'GET', path: '/api/swarm', status: 200 }),
   W({ role: 'creator', method: 'GET', path: '/api/swarm/stats', status: 403, text: 'insufficient role' }),
   W({ role: 'admin', method: 'GET', path: '/api/swarm/stats', status: 200 }),
   // AI keys: reads need no permission

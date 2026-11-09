@@ -100,7 +100,7 @@ export function registerFleetTools(server: McpServer, ctx: ToolContext): void {
       }));
       return result({ ok: true, ...describeLamp(ctx.registry.lookup(l.deviceId)), online: true, info, state });
     } catch (e) {
-      return result({ ok: true, ...describeLamp(l), online: false, reason: explain(e, l) });
+      return result({ ok: false, ...describeLamp(l), online: false, reason: explain(e, l) });
     }
   }));
 
@@ -161,8 +161,11 @@ export function registerFleetTools(server: McpServer, ctx: ToolContext): void {
         'changed; using it again needs a new share link' + (l.role === 'admin' ? ' (or lamps_discover while it is unpaired).' : '.')));
     }
     if (!ctx.confirm.consume('lamp_forget', args, args.confirm)) return failure(CONFIRM_REFUSED);
-    await ctx.registry.forget(l.deviceId);
-    return result({ ok: true, forgot: l.name, deviceId: l.deviceId });
+    const { secretError } = await ctx.registry.forget(l.deviceId);
+    return result({
+      ok: true, forgot: l.name, deviceId: l.deviceId,
+      ...(secretError ? { warning: `removed from the fleet, but its stored key could not be deleted: ${secretError}` } : {}),
+    });
   }));
 
   server.registerTool('lamp_rename', {

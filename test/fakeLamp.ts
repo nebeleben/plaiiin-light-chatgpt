@@ -240,7 +240,7 @@ const ROUTES: Route[] = [
     ok(c.res, { scene: sc });
   } },
   // system
-  { method: 'GET', re: /^\/api\/swarm$/, min: 'user', aiPerm: 'swarm', handle: ({ s, res }) => s.swarm ? send(res, 200, s.swarm) : send(res, 404, 'not applicable') },
+  { method: 'GET', re: /^\/api\/swarm$/, min: 'admin', aiPerm: 'swarm', handle: ({ s, res }) => s.swarm ? send(res, 200, s.swarm) : send(res, 404, 'not applicable') },
   { method: 'GET', re: /^\/api\/swarm\/stats$/, min: 'admin', aiPerm: 'swarm', handle: ({ res }) => send(res, 200, {
     tx: 0, rx: 0, txFail: 0, lastFrom: '00:00:00:00:00:00', dropAuth: 0, dropReplay: 0, relayed: 0, applied: 0, stackFree: 0 }) },
   { method: 'GET', re: /^\/api\/ota\/info$/, min: 'user', handle: ({ s, res }) => send(res, 200, {

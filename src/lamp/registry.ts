@@ -1,6 +1,6 @@
 import { LampClient } from './client';
 import { LampHttpError, LampUnreachable } from './errors';
-import { allows } from './access';
+import { allows, SWARM_READ } from './access';
 import { resolveDevice, type Discovered } from './discovery';
 import type { ShareLink } from './shareLink';
 import type { FleetLamp, FleetRole, FleetStore } from '../store/fleet';
@@ -66,12 +66,20 @@ export class Registry {
     this.fleet.upsert(l);
   }
 
-  /** Remove a lamp from this computer: fleet entry, stored secret and open client. The lamp is not touched. */
-  async forget(deviceId: string): Promise<void> {
+  /**
+   * Remove a lamp from this computer: fleet entry first, then the open client and the stored secret.
+   * The lamp is not touched. A failed secret delete is reported, but the lamp stays forgotten.
+   */
+  async forget(deviceId: string): Promise<{ secretError?: string }> {
+    this.fleet.remove(deviceId);
     this.clients.get(deviceId)?.client.destroy();
     this.clients.delete(deviceId);
-    await this.secrets.delete(deviceId);
-    this.fleet.remove(deviceId);
+    try {
+      await this.secrets.delete(deviceId);
+      return {};
+    } catch (e) {
+      return { secretError: e instanceof Error ? e.message : String(e) };
+    }
   }
 
   async client(idOrName: string): Promise<{ lamp: FleetLamp; client: LampClient }> {
@@ -177,7 +185,7 @@ export class Registry {
       grid: typeof info.logicalW === 'number' && typeof info.logicalH === 'number' ? { w: info.logicalW, h: info.logicalH } : undefined,
       firmware: info.firmwareVersion, swarmId: null, shared, lastSeen: now(),
     };
-    if (allows(lamp, { perm: 'swarm', minRole: 'user' })) {
+    if (allows(lamp, SWARM_READ)) {
       const sw = await c.get<Swarm>('/api/swarm').catch(() => undefined);
       lamp.swarmId = sw?.member && sw.id ? sw.id : null;
     }

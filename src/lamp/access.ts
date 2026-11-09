@@ -7,6 +7,12 @@ export type MinRole = 'user' | 'creator' | 'admin';
 /** What a tool needs. Read-only tools pass no `perm`. */
 export interface Need { perm?: Perm; minRole: MinRole }
 
+/**
+ * Reading swarm membership (`GET /api/swarm`, `/api/swarm/stats`): admin-only on the firmware
+ * (light_api.c swarm_get_handler / swarm_stats_handler), or an AI key with `swarm`.
+ */
+export const SWARM_READ: Need = { perm: 'swarm', minRole: 'admin' };
+
 const LADDER: Record<MinRole, number> = { user: 1, creator: 2, admin: 3 };
 
 /**

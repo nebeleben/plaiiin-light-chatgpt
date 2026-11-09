@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { makeHarness, type Harness, type HarnessOpts } from './harness';
+import { fanout } from '../src/tools/fanout';
 
 let h: Harness | undefined;
 afterEach(async () => { await h?.close(); h = undefined; });
@@ -110,6 +111,13 @@ describe('control tools', () => {
     const r = await t.call('lamp_state', { lamps: 'all' });
     expect(r.results).toHaveLength(2);
     for (const x of r.results) expect(x).toMatchObject({ ok: true, on: false, mode: 'api' });
+  });
+
+  it('lamp response fields cannot overwrite lamp, deviceId or ok', async () => {
+    const t = await harness();
+    await t.addFake({ deviceId: 'aaaaaaaaaaaa', name: 'Alpha' });
+    const r = await fanout(t.ctx, 'all', { minRole: 'user' }, async () => ({ lamp: 'evil', deviceId: 'evil', ok: false, extra: 1 }));
+    expect(r).toEqual([{ lamp: 'Alpha', deviceId: 'aaaaaaaaaaaa', ok: true, extra: 1 }]);
   });
 
   it('unknown lamp names fail the call with a reason', async () => {

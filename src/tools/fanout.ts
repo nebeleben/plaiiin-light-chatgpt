@@ -23,7 +23,7 @@ export async function fanout<T extends object>(
     if (refused) return { ...base, ok: false, skipped: true, reason: refused };
     try {
       const r = await ctx.registry.call(l.deviceId, fn);
-      return { ...base, ...r, ok: true } as LampOk<T>;
+      return { ...r, ...base, ok: true } as LampOk<T>;
     } catch (e) {
       return { ...base, ok: false, reason: explain(e, l, need) };
     }
