@@ -30,21 +30,57 @@ const now = () => new Date().toISOString();
 /** Fleet + secrets + clients: the only way tools reach a lamp. One LampClient per deviceId. */
 export class Registry {
   private readonly clients = new Map<string, { client: LampClient; token?: string }>();
+  private readonly timeoutMs?: number;
 
   constructor(
     private readonly fleet: FleetStore,
     private readonly secrets: Secrets,
     private readonly resolve: (deviceId: string) => Promise<Discovered | undefined> = (id) => resolveDevice(id),
-  ) {}
+    opts: { timeoutMs?: number } = {},
+  ) {
+    this.timeoutMs = opts.timeoutMs;
+  }
+
+  /** All fleet entries. */
+  list(): FleetLamp[] {
+    return this.fleet.list();
+  }
+
+  /**
+   * One lamp by exact deviceId, else by name (case-insensitive). Throws `unknown lamp: X`, or — when a
+   * name matches more than one lamp — `"X" matches several lamps — use the deviceId`.
+   */
+  lookup(idOrName: string): FleetLamp {
+    const want = idOrName.trim();
+    const all = this.fleet.list();
+    const byId = all.find((l) => l.deviceId === want);
+    if (byId) return byId;
+    const byName = all.filter((l) => l.name.toLowerCase() === want.toLowerCase());
+    if (byName.length > 1) throw new Error(`"${idOrName}" matches several lamps — use the deviceId`);
+    if (!byName[0]) throw new Error(`unknown lamp: ${idOrName}`);
+    return byName[0];
+  }
+
+  /** Save changed fleet fields (e.g. a new name). */
+  update(l: FleetLamp): void {
+    this.fleet.upsert(l);
+  }
+
+  /** Remove a lamp from this computer: fleet entry, stored secret and open client. The lamp is not touched. */
+  async forget(deviceId: string): Promise<void> {
+    this.clients.get(deviceId)?.client.destroy();
+    this.clients.delete(deviceId);
+    await this.secrets.delete(deviceId);
+    this.fleet.remove(deviceId);
+  }
 
   async client(idOrName: string): Promise<{ lamp: FleetLamp; client: LampClient }> {
-    const lamp = this.fleet.get(idOrName);
-    if (!lamp) throw new Error(`unknown lamp: ${idOrName}`);
+    const lamp = this.lookup(idOrName);
     const token = await this.secrets.get(lamp.deviceId);
     let entry = this.clients.get(lamp.deviceId);
     if (entry && entry.token !== token) { entry.client.destroy(); entry = undefined; }
     if (!entry) {
-      entry = { client: new LampClient({ host: lamp.host, port: lamp.port, token }), token };
+      entry = { client: new LampClient({ host: lamp.host, port: lamp.port, token }, { timeoutMs: this.timeoutMs }), token };
       this.clients.set(lamp.deviceId, entry);
     } else {
       entry.client.updateEndpoint(lamp.host, lamp.port);
@@ -70,7 +106,7 @@ export class Registry {
 
   /** Add (or re-add) a lamp from a share link: whoami + /api (+ /api/swarm when readable) → fleet + secret. */
   async addShared(link: ShareLink): Promise<FleetLamp> {
-    const c = new LampClient({ host: link.host, port: link.port, token: link.key });
+    const c = new LampClient({ host: link.host, port: link.port, token: link.key }, { timeoutMs: this.timeoutMs });
     try {
       const who = await c.get<Whoami>('/api/whoami');
       const lamp = await this.describe(c, link.host, link.port, accessFrom(who), true);
@@ -84,7 +120,7 @@ export class Registry {
 
   /** Add an unpaired lamp found on the LAN: it answers as admin without a token, so no secret is stored. */
   async addUnpaired(d: Discovered): Promise<FleetLamp> {
-    const c = new LampClient({ host: d.host, port: d.port });
+    const c = new LampClient({ host: d.host, port: d.port }, { timeoutMs: this.timeoutMs });
     try {
       let who: Whoami;
       try {
@@ -119,8 +155,7 @@ export class Registry {
     if (lamps === 'all') return this.fleet.list();
     const out: FleetLamp[] = [];
     for (const n of lamps) {
-      const l = this.fleet.get(n);
-      if (!l) throw new Error(`unknown lamp: ${n}`);
+      const l = this.lookup(n);
       if (!out.some((x) => x.deviceId === l.deviceId)) out.push(l);
     }
     return out;

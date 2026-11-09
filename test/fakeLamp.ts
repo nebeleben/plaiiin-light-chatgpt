@@ -113,6 +113,8 @@ const ROUTES: Route[] = [
     c.s.current = names[(i + (c.m[1] === 'next' ? 1 : names.length - 1) + (i < 0 ? 1 : 0)) % names.length]!;
     c.s.mode = 'js'; c.s.scene = null; ok(c.res);
   } },
+  { method: 'GET', re: /^\/api\/play\/current$/, min: 'user', handle: ({ s, res }) => send(res, 200, {
+    current: s.current, playing: s.mode === 'js' ? s.current : null }) },
   { method: 'POST', re: /^\/api\/stop$/, min: 'user', aiPerm: 'control', handle: (c) => { c.s.current = null; ok(c.res); } },
   { method: 'POST', re: /^\/api\/fade$/, min: 'creator', aiPerm: 'control', handle: (c) => ok(c.res) },
   { method: 'POST', re: /^\/api\/name$/, min: 'admin', aiPerm: 'rename', handle: (c) => {
