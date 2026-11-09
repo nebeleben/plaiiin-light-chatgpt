@@ -239,6 +239,8 @@ const ROUTES: Route[] = [
   } },
   // system
   { method: 'GET', re: /^\/api\/swarm$/, min: 'user', aiPerm: 'swarm', handle: ({ s, res }) => s.swarm ? send(res, 200, s.swarm) : send(res, 404, 'not applicable') },
+  { method: 'GET', re: /^\/api\/swarm\/stats$/, min: 'admin', aiPerm: 'swarm', handle: ({ res }) => send(res, 200, {
+    tx: 0, rx: 0, txFail: 0, lastFrom: '00:00:00:00:00:00', dropAuth: 0, dropReplay: 0, relayed: 0, applied: 0, stackFree: 0 }) },
   { method: 'GET', re: /^\/api\/ota\/info$/, min: 'user', handle: ({ s, res }) => send(res, 200, {
     version: s.firmware, date: 'Jan  1 2026', time: '00:00:00', partition: 'ota_0', idf: 'v5.3.2', form: s.form, target: s.target }) },
   { method: 'POST', re: /^\/api\/ota$/, min: 'admin', aiPerm: 'ota', handle: (c) => { c.s.otaReceived = Buffer.from(c.body); ok(c.res); } },
@@ -269,6 +271,7 @@ function deny(s: FakeLampState, role: Role, r: Route): string | null {
     if (r.method === 'GET' && r.min === 'user' && !r.aiPerm) return null;                       // plain user reads
     if (!r.aiPerm) return 'insufficient role';                                                  // never grantable
     if (!s.perms.includes(r.aiPerm)) return 'not permitted for this AI key';
+    if (r.method === 'GET') return null;                                                        // reads are exempt from only-while-on
     if (s.onlyWhenOn && !s.on && r.method + r.re.source !== 'POST' + /^\/api\/power$/.source) return 'lamp is off';
     return null;
   }
