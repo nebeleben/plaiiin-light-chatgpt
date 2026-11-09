@@ -30,7 +30,7 @@ describe('LampClient', () => {
 
   it('wraps a 403 in LampHttpError with the firmware text', async () => {
     const { client } = await setup({ role: 'ai', perms: ['effects'] });
-    const e = await client.send('POST', '/api/power', { on: true }).catch((x: any) => x);
+    const e = await client.send<any>('POST', '/api/power', { on: true }).catch((x: any) => x);
     expect(e).toBeInstanceOf(LampHttpError);
     expect(e.status).toBe(403);
     expect(e.message).toBe('not permitted for this AI key');
@@ -38,7 +38,7 @@ describe('LampClient', () => {
 
   it('unwraps JSON message/error bodies', async () => {
     const { client } = await setup({ role: 'admin', grid: { w: 4, h: 2 } });
-    const e = await client.sendBinary('POST', '/api/frame', Buffer.alloc(5)).catch((x: any) => x);
+    const e = await client.sendBinary<any>('POST', '/api/frame', Buffer.alloc(5)).catch((x: any) => x);
     expect(e).toBeInstanceOf(LampHttpError);
     expect(e.status).toBe(400);
     expect(e.message).toBe('expected 24 bytes (4x2x3)');
