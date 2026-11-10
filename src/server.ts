@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolContext } from './tools/context';
 import { registerControlTools } from './tools/control';
+import { registerEffectsTools } from './tools/effects';
 import { registerFleetTools } from './tools/fleet';
 import { registerSwarmTools } from './tools/swarm';
 
@@ -20,5 +21,6 @@ export function buildServer(ctx: ToolContext): McpServer {
   registerFleetTools(server, ctx);
   registerSwarmTools(server, ctx);
   registerControlTools(server, ctx);
+  registerEffectsTools(server, ctx);
   return server;
 }

@@ -129,31 +129,42 @@ const ROUTES: Route[] = [
       name, description: '', tags: [], source: s.hardcoded.has(name) ? 'hardcoded' : 'script' })) });
   } },
   { method: 'POST', re: /^\/api\/js\/validate$/, min: 'creator', aiPerm: 'effects', handle: (c) => validate(c) },
-  { method: 'POST', re: /^\/api\/js\/compile$/, min: 'creator', aiPerm: 'effects', handle: (c) => validate(c) },
+  { method: 'POST', re: /^\/api\/js\/compile$/, min: 'creator', aiPerm: 'effects', handle: (c) => {
+    if (/SYNTAXERR/.test(c.body.toString('utf8'))) return send(c.res, 400, { status: 'error', message: 'script error: SyntaxError' });
+    send(c.res, 200, Buffer.from([0x50, 0x4c, 0x42, 0x43]));                                // 4 bytes of "bytecode"
+  } },
   { method: 'GET', re: /^\/api\/js\/([\w-]+)\/params$/, min: 'user', handle: ({ s, m, res }) => {
-    if (!s.effects.has(m[1]!)) return send(res, 404, 'no such effect');
-    send(res, 200, { params: s.params.get(m[1]!) ?? {} });
+    if (!s.effects.has(m[1]!)) return send(res, 404, { status: 'error', message: 'not found' });
+    send(res, 200, paramSchema(s, m[1]!));
   } },
   { method: 'PUT', re: /^\/api\/js\/([\w-]+)\/params$/, min: 'user', aiPerm: 'effects', handle: (c) => {
-    if (!c.s.effects.has(c.m[1]!)) return send(c.res, 404, 'no such effect');
-    c.s.params.set(c.m[1]!, { ...(c.s.params.get(c.m[1]!) ?? {}), ...json(c) }); ok(c.res);
+    if (!c.s.effects.has(c.m[1]!)) return send(c.res, 404, { status: 'error', message: 'not found' });
+    c.s.params.set(c.m[1]!, { ...(c.s.params.get(c.m[1]!) ?? {}), ...json(c) });
+    send(c.res, 200, paramSchema(c.s, c.m[1]!));
   } },
   { method: 'GET', re: /^\/api\/js\/([\w-]+)$/, min: 'user', handle: ({ s, m, res }) => {
     const src = s.effects.get(m[1]!);
-    if (src === undefined) return send(res, 404, 'no such effect');
-    send(res, 200, src);
+    if (src === undefined) return send(res, 404, { status: 'error', message: 'not found' });
+    if (s.hardcoded.has(m[1]!)) return send(res, 404, { status: 'error', message: 'no source (hardcoded effect)' });
+    send(res, 200, src, { 'Content-Type': 'application/javascript' });
   } },
   { method: 'PUT', re: /^\/api\/js\/([\w-]+)$/, min: 'creator', aiPerm: 'effects', handle: (c) => {
     const src = c.body.toString('utf8');
-    if (/SYNTAXERR/.test(src)) return send(c.res, 400, 'script error: SyntaxError');
-    c.s.effects.set(c.m[1]!, src); c.s.hardcoded.delete(c.m[1]!); ok(c.res);
+    if (c.s.hardcoded.has(c.m[1]!)) return send(c.res, 409, { status: 'error', message: 'name reserved (hardcoded effect)' });
+    if (/SYNTAXERR/.test(src)) return send(c.res, 400, { status: 'error', message: 'script error: SyntaxError' });
+    c.s.effects.set(c.m[1]!, src); ok(c.res, { name: c.m[1] });
   } },
   { method: 'DELETE', re: /^\/api\/js\/([\w-]+)$/, min: 'creator', aiPerm: 'effects', handle: (c) => {
-    if (!c.s.effects.delete(c.m[1]!)) return send(c.res, 404, 'no such effect');
+    if (c.s.hardcoded.has(c.m[1]!)) return send(c.res, 409, { status: 'error', message: 'name reserved (hardcoded effect)' });
+    if (!c.s.effects.delete(c.m[1]!)) return send(c.res, 404, { status: 'error', message: 'not found' });
+    c.s.params.delete(c.m[1]!);
     if (c.s.current === c.m[1]) c.s.current = null;
     ok(c.res);
   } },
-  { method: 'GET', re: /^\/api\/form-prompt$/, min: 'user', handle: ({ s, res }) => send(res, 200, { prompt: s.formPrompt ?? '', custom: s.formPrompt !== null }) },
+  { method: 'GET', re: /^\/api\/form-prompt$/, min: 'user', handle: ({ s, res }) => {
+    const def = `A ${s.w}×${s.h} ${s.form}.`;
+    send(res, 200, { form: s.form, default: def, effective: s.formPrompt ?? def, hasOverride: s.formPrompt !== null, ...(s.formPrompt !== null ? { override: s.formPrompt } : {}) });
+  } },
   { method: 'PUT', re: /^\/api\/form-prompt$/, min: 'creator', handle: (c) => { c.s.formPrompt = c.body.toString('utf8'); ok(c.res); } },
   { method: 'DELETE', re: /^\/api\/form-prompt$/, min: 'creator', handle: (c) => { c.s.formPrompt = null; ok(c.res); } },
   // frame + images
@@ -255,8 +266,27 @@ function modeSet(c: Ctx): void {
 }
 function validate(c: Ctx): void {
   const src = c.body.toString('utf8');
-  if (/SYNTAXERR/.test(src)) return send(c.res, 400, 'script error: SyntaxError');
+  if (/SYNTAXERR/.test(src)) return send(c.res, 400, { status: 'error', message: 'script error: SyntaxError' });
   ok(c.res);
+}
+
+/** Built-in effects' params (the firmware serves them from the effect descriptor). */
+const BUILTIN_PARAMS: Record<string, Array<{ name: string; min: number; max: number; default: number; description: string }>> = {
+  rainbow: [{ name: 'speed', min: 0, max: 10, default: 1, description: 'cycle speed' }],
+  carousel: [],
+};
+const PARAM_RE = /^\s*\/\/\s*@param\s+([A-Za-z_]\w*)\s+(-?[\d.eE+]+)\s*\.\.\s*(-?[\d.eE+]+)\s*=\s*(-?[\d.eE+]+)\s*(.*)$/;
+
+/** `GET /api/js/<n>/params`: `{items:[{name,min,max,default,value,description}]}` from @param lines (or the built-in table) + stored values. */
+function paramSchema(s: FakeLampState, name: string): { items: Array<Record<string, unknown>> } {
+  const defs = s.hardcoded.has(name) ? (BUILTIN_PARAMS[name] ?? []) : (s.effects.get(name) ?? '').split('\n').flatMap((l) => {
+    const m = PARAM_RE.exec(l);
+    return m ? [{ name: m[1]!, min: Number(m[2]), max: Number(m[3]), default: Number(m[4]), description: m[5]!.trim() }] : [];
+  });
+  const vals = s.params.get(name) ?? {};
+  const items: Array<Record<string, unknown>> = defs.map((d) => ({ ...d, value: typeof vals[d.name] === 'number' ? vals[d.name] : d.default }));
+  for (const [k, v] of Object.entries(vals)) if (!defs.some((d) => d.name === k)) items.push({ name: k, min: 0, max: 255, default: 0, value: v, description: '' });
+  return { items };
 }
 
 /** Role for a bearer token (admin when the lamp is "unpaired": role admin and no token sent). */

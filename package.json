@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "node esbuild.mjs",
+    "pretest": "node scripts/check-vendor.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

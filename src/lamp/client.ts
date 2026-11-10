@@ -48,6 +48,20 @@ export class LampClient {
     });
   }
 
+  /** A plain-text body (script source: `GET /api/js/<name>`). */
+  async getText(path: string): Promise<string> {
+    return (await this.getBinary(path)).data.toString('utf8');
+  }
+
+  /** A raw request body (script source as text/javascript); returns the raw response body. */
+  sendRaw(method: 'POST' | 'PUT', path: string, body: Buffer | string, contentType: string): Promise<{ data: Buffer; headers: Record<string, string> }> {
+    return this.enqueue(async () => {
+      const r = await this.exec(method, path, typeof body === 'string' ? Buffer.from(body, 'utf8') : body, contentType);
+      this.ok(r);
+      return { data: r.data, headers: r.headers };
+    });
+  }
+
   /** The lamp moved (DHCP / mDNS re-resolve): later requests go to the new address on a fresh socket. */
   updateEndpoint(host: string, port: number): void {
     if (host === this.ep.host && port === this.ep.port) return;

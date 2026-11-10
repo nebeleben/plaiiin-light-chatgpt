@@ -27,6 +27,11 @@ describe('built server over stdio', () => {
       expect(tools.map((t) => t.name)).toContain('lamps_list');
       const r = await client.callTool({ name: 'lamps_list', arguments: {} });
       expect(JSON.parse((r.content as Array<{ text: string }>)[0]!.text)).toEqual({ lamps: [] });
+      // the bundled shade runtime renders a preview (no file reads outside the bundle)
+      const p = await client.callTool({ name: 'effect_preview', arguments: { source: 'function shade(){ emit(0, 255, 0); }', w: 4, h: 4, frames: 2 } });
+      const parts = p.content as Array<{ type: string; mimeType?: string; text?: string }>;
+      expect(parts.find((c) => c.type === 'image')?.mimeType).toBe('image/png');
+      expect(JSON.parse(parts.find((c) => c.type === 'text')!.text!)).toMatchObject({ ok: true, grid: { w: 4, h: 4 }, frames: 2 });
     } finally {
       await client.close();
       rmSync(dir, { recursive: true, force: true });

@@ -8,13 +8,16 @@ afterEach(async () => { await h?.close(); h = undefined; });
 const harness = async (o?: HarnessOpts) => (h = await makeHarness(o));
 
 describe('tool list', () => {
-  it('registers every Task 3 tool with the three annotations', async () => {
+  it('registers every tool with the three annotations', async () => {
     const t = await harness();
     const { tools } = await t.client.listTools();
     const names = tools.map((x) => x.name).sort();
     expect(names).toEqual([
-      'lamp_add_shared', 'lamp_brightness', 'lamp_color', 'lamp_forget', 'lamp_info', 'lamp_mode', 'lamp_play',
-      'lamp_power', 'lamp_rename', 'lamp_state', 'lamps_discover', 'lamps_list', 'swarms_list',
+      'effect_compile', 'effect_copy', 'effect_delete', 'effect_preview', 'effect_read', 'effect_tunes_get',
+      'effect_tunes_set', 'effect_upload', 'effect_validate', 'effects_list',
+      'lamp_add_shared', 'lamp_brightness', 'lamp_color', 'lamp_forget', 'lamp_form_prompt', 'lamp_info', 'lamp_mode', 'lamp_play',
+      'lamp_power', 'lamp_rename', 'lamp_state', 'lamps_discover', 'lamps_list',
+      'library_list', 'library_push_effect', 'library_save_effect', 'swarms_list',
     ]);
     for (const tool of tools) {
       expect(typeof tool.annotations?.readOnlyHint, tool.name).toBe('boolean');
