@@ -82,6 +82,28 @@ describe('preview sandbox (scripts are untrusted)', () => {
     }
   });
 
+  it('typed arrays, ArrayBuffer, Wasm and friends are gone from the script\'s world', async () => {
+    const names = ['ArrayBuffer', 'SharedArrayBuffer', 'DataView', 'Atomics', 'WebAssembly', 'Int8Array', 'Uint8Array',
+      'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array',
+      'BigInt64Array', 'BigUint64Array', 'Buffer'];
+    const f = await renderFrames(
+      `var N = ${JSON.stringify(names)}, bad = 0; for (var i = 0; i < N.length; i++) if (typeof globalThis[N[i]] !== 'undefined') bad++;\n` +
+      "function shade(){ emit(bad === 0 ? 255 : bad, 0, 0); }", one);
+    expect(f[0]![0]).toBe(255);
+  });
+
+  it('a Uint8Array bomb and a 1 GB ArrayBuffer fail fast with an error, and previews still work', async () => {
+    for (const bomb of [
+      'var a = []; for(;;) a.push(new Uint8Array(1e8).fill(1)); function shade(){}',
+      'var b = new ArrayBuffer(1e9); function shade(){}',
+    ]) {
+      const t0 = Date.now();
+      await expect(renderFrames(bomb, { ...one, timeoutMs: 20000 })).rejects.toThrow(/ReferenceError: (Uint8Array|ArrayBuffer) is not defined/);
+      expect(Date.now() - t0).toBeLessThan(3000);
+    }
+    expect([...(await renderFrames(RED, one))[0]!]).toEqual([255, 0, 0]);
+  });
+
   it('a memory bomb fails on its own and later previews still work', async () => {
     const bomb = "var a = []; for(;;) a.push(new Array(1e6).fill(1.5)); function shade(){}";
     await expect(renderFrames(bomb, { ...one, timeoutMs: 20000 })).rejects.toThrow(/out of memory/);
@@ -112,6 +134,8 @@ describe('framesToPngStrip', () => {
     expect(png.width).toBeLessThanOrEqual(4096);
     expect(png.width % w).toBe(0);
     expect(PNG.sync.read(framesToPngStrip(Array(60).fill(f), w, 1, 3)).width).toBeLessThanOrEqual(4096);
+    expect(PNG.sync.read(framesToPngStrip([new Uint8Array(4096 * 3)], 4096, 1, 8)).width).toBe(4096); // scale lowered
+    expect(() => framesToPngStrip([new Uint8Array(16384 * 3)], 16384, 1)).toThrow(/16384 px wide/);
   });
 
   it('keeps distinct pixels where they are', () => {

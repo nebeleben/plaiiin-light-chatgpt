@@ -31,6 +31,22 @@ var __call = function (j) {
 };
 `;
 
+// Off-heap memory isn't bounded by --max-old-space-size, so every way to allocate it is removed
+// from the context before any code runs there (the shade runtime uses plain arrays only). No syntax
+// creates these objects, and a fresh context holds no instance to walk a prototype chain from.
+const BLOCKED = [
+  'ArrayBuffer', 'SharedArrayBuffer', 'DataView', 'Atomics', 'WebAssembly',
+  'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array',
+  'Float16Array', 'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array',
+  'Buffer', 'FinalizationRegistry', 'WeakRef',
+];
+const LOCKDOWN = `(function (g, names) {
+  for (var i = 0; i < names.length; i++) {
+    if (Object.prototype.hasOwnProperty.call(g, names[i])) delete g[names[i]];
+    if (typeof g[names[i]] !== 'undefined') throw new Error('preview sandbox: could not remove ' + names[i]);
+  }
+})(globalThis, ${JSON.stringify(BLOCKED)});`;
+
 function plain(v) {
   // Copy the annotation info out field by field: primitives only.
   const num = (x) => (typeof x === 'number' ? x : Number(x));
@@ -46,6 +62,7 @@ function plain(v) {
 
 function run(job) {
   const ctx = vm.createContext(Object.create(null), { codeGeneration: { strings: true, wasm: false }, microtaskMode: 'afterEvaluate' });
+  vm.runInContext(LOCKDOWN, ctx);
   vm.runInContext(job.runtime, ctx, { filename: 'shade-runtime.js' });
   vm.runInContext(DRIVER, ctx);
   const req = job.req;

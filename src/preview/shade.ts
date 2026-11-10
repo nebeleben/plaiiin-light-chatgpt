@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 // Byte-identical copy of lampos/portal/shade-runtime.js (scripts/check-vendor.mjs), bundled as text
 // and handed to the worker over stdin.
@@ -23,6 +23,10 @@ export interface ScriptInfo {
 export const MAX_PIXELS = 16384;
 export const MAX_FRAMES = 60;
 export const WORKER_HEAP_MB = 128;
+/** Defence in depth: the worker's resident size is polled and it is killed above this. */
+export const WORKER_RSS_MB = 512;
+export const MAX_WIDTH = 4096;
+const RSS_POLL_MS = 150;
 /** Node startup + JSON transfer on top of the script budget before the watchdog kills the worker. */
 const STARTUP_MS = 2000;
 const MAX_OUTPUT = 32 * 1024 * 1024;
@@ -54,15 +58,23 @@ function runWorker(job: Job, timeoutMs: number): Promise<WorkerOut> {
     let why: string | undefined;
     const kill = (reason: string) => { why ??= reason; child.kill('SIGKILL'); };
     const watchdog = setTimeout(() => kill(`script timed out after ${timeoutMs} ms (endless loop?)`), timeoutMs + STARTUP_MS);
+    const rss = process.platform === 'win32' ? undefined : setInterval(() => {
+      if (child.pid === undefined || child.exitCode !== null) return;
+      execFile('ps', ['-o', 'rss=', '-p', String(child.pid)], (e, out) => {
+        const kb = Number(String(out).trim());
+        if (!e && kb > WORKER_RSS_MB * 1024) kill(`script ran out of memory (preview limit ${WORKER_RSS_MB} MB resident)`);
+      });
+    }, RSS_POLL_MS);
     child.stdout.on('data', (d: Buffer) => {
       outLen += d.length;
       if (outLen > MAX_OUTPUT) kill('preview output too large'); else out.push(d);
     });
     child.stderr.on('data', (d: Buffer) => { if (err.length < 8192) err += d.toString('utf8'); });
     child.stdin.on('error', () => { /* the worker died early; reported on close */ });
-    child.on('error', (e) => { clearTimeout(watchdog); reject(new Error(`preview worker failed to start: ${e.message}`)); });
+    child.on('error', (e) => { clearTimeout(watchdog); clearInterval(rss); reject(new Error(`preview worker failed to start: ${e.message}`)); });
     child.on('close', (code, signal) => {
       clearTimeout(watchdog);
+      clearInterval(rss);
       if (why) return reject(new Error(why));
       let res: { ok?: WorkerOut; error?: unknown } | undefined;
       try { res = JSON.parse(Buffer.concat(out).toString('utf8')) as typeof res; } catch { res = undefined; }
@@ -81,7 +93,7 @@ function runWorker(job: Job, timeoutMs: number): Promise<WorkerOut> {
 
 function checkGrid(o: RenderOpts): void {
   const { w, h, frames, fps } = o;
-  if (!Number.isInteger(w) || !Number.isInteger(h) || w < 1 || h < 1 || w * h > MAX_PIXELS) throw new Error(`grid must be at least 1×1 and at most ${MAX_PIXELS} pixels`);
+  if (!Number.isInteger(w) || !Number.isInteger(h) || w < 1 || h < 1 || w * h > MAX_PIXELS || w > MAX_WIDTH) throw new Error(`grid must be at least 1×1, at most ${MAX_WIDTH} wide and at most ${MAX_PIXELS} pixels`);
   if (!Number.isInteger(frames) || frames < 1 || frames > MAX_FRAMES) throw new Error(`frames must be 1–${MAX_FRAMES}`);
   if (!(fps > 0)) throw new Error('fps must be > 0');
 }

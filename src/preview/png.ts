@@ -12,13 +12,15 @@ function defaultScale(w: number, h: number, n: number): number {
 
 /**
  * Frames (each w·h·3 RGB) side by side in one PNG, nearest-neighbour scaled. The strip is never
- * wider than 4096 px: frames that don't fit at the chosen scale are left out (at least one is
- * always shown; the caller can tell how many from width / (w·scale)).
+ * wider than 4096 px: a requested scale is lowered until one frame fits, frames that don't fit are
+ * left out (the caller can tell how many from width / (w·scale)), and a frame wider than 4096 px
+ * is refused.
  */
 export function framesToPngStrip(frames: Uint8Array[], w: number, h: number, scale?: number): Buffer {
   if (!frames.length) throw new Error('no frames');
-  const s = scale ?? defaultScale(w, h, frames.length);
-  const shown = frames.slice(0, Math.max(1, Math.min(frames.length, Math.floor(MAX_STRIP_WIDTH / (w * s)))));
+  if (w > MAX_STRIP_WIDTH) throw new Error(`a frame ${w} px wide can't be shown (at most ${MAX_STRIP_WIDTH})`);
+  const s = Math.max(1, Math.min(scale ?? defaultScale(w, h, frames.length), Math.floor(MAX_STRIP_WIDTH / w)));
+  const shown = frames.slice(0, Math.min(frames.length, Math.floor(MAX_STRIP_WIDTH / (w * s))));
   const png = new PNG({ width: w * shown.length * s, height: h * s });
   const W = png.width;
   shown.forEach((f, i) => {
