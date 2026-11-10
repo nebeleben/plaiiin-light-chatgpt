@@ -18,7 +18,8 @@ describe('tool list', () => {
       'image_copy', 'image_delete', 'image_draw', 'image_get', 'image_label', 'image_show', 'images_list',
       'lamp_add_shared', 'lamp_brightness', 'lamp_color', 'lamp_forget', 'lamp_form_prompt', 'lamp_info', 'lamp_mode', 'lamp_play',
       'lamp_power', 'lamp_rename', 'lamp_state', 'lamps_discover', 'lamps_list',
-      'library_list', 'library_push_effect', 'library_push_image', 'library_save_effect', 'library_save_image', 'swarms_list',
+      'library_list', 'library_push_effect', 'library_push_image', 'library_push_scene', 'library_save_effect', 'library_save_image',
+      'library_save_scene', 'scene_activate', 'scene_capture', 'scene_copy', 'scene_delete', 'scene_get', 'scene_put', 'scenes_list', 'swarms_list',
     ]);
     for (const tool of tools) {
       expect(typeof tool.annotations?.readOnlyHint, tool.name).toBe('boolean');

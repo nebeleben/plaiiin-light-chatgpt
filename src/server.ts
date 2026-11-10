@@ -4,6 +4,7 @@ import { registerControlTools } from './tools/control';
 import { registerEffectsTools } from './tools/effects';
 import { registerFleetTools } from './tools/fleet';
 import { registerImagesTools } from './tools/images';
+import { registerScenesTools } from './tools/scenes';
 import { registerSwarmTools } from './tools/swarm';
 
 export const SERVER_NAME = 'plaiiin-lamps';
@@ -24,5 +25,6 @@ export function buildServer(ctx: ToolContext): McpServer {
   registerControlTools(server, ctx);
   registerEffectsTools(server, ctx);
   registerImagesTools(server, ctx);
+  registerScenesTools(server, ctx);
   return server;
 }

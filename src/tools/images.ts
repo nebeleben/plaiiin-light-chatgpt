@@ -35,7 +35,7 @@ const libName = z.string().regex(/^[A-Za-z0-9_-]{1,32}$/, '1–32 letters, digit
 const enc = (n: string) => encodeURIComponent(n);
 
 /** The lamp's logical grid, live (`POST /api/frame` must match it exactly), else the fleet's cached one. */
-async function gridOf(c: LampClient, l: FleetLamp): Promise<{ w: number; h: number }> {
+export async function gridOf(c: LampClient, l: FleetLamp): Promise<{ w: number; h: number }> {
   const a = await c.get<{ logicalW?: number; logicalH?: number }>('/api').catch(() => undefined);
   if (a?.logicalW && a.logicalH) return { w: a.logicalW, h: a.logicalH };
   if (l.grid) return l.grid;
@@ -48,7 +48,7 @@ function sanitized(raw: string): string {
 }
 
 /** A source image with its label, as copied between lamps / to the library. */
-async function fetchImage(c: LampClient, id: string) {
+export async function fetchImage(c: LampClient, id: string) {
   const entry = (await listImages(c)).find((e) => e.name === id);
   if (!entry) throw new Error(`no image ${id} on this lamp`);
   const img = await readImage(c, id);
