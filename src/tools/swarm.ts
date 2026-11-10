@@ -32,10 +32,11 @@ export interface SwarmRefresh {
 }
 
 /**
- * Re-read `GET /api/swarm` on every lamp we may read it from. 403 → membership unknown; 404 (firmware
- * without swarm) → solo, saved; unreachable / timeout → keeps its stored id; any other error → unknown.
+ * Re-read `GET /api/swarm` on every lamp we may read it from (all lamps, or just `targets`). 403 →
+ * membership unknown; 404 (firmware without swarm) → solo, saved; unreachable / timeout → keeps its
+ * stored id; any other error → unknown.
  */
-export async function refreshSwarms(ctx: ToolContext): Promise<SwarmRefresh> {
+export async function refreshSwarms(ctx: ToolContext, targets?: FleetLamp[]): Promise<SwarmRefresh> {
   const unknown = new Set<string>();
   const unreachable: string[] = [];
   const save = (l: FleetLamp, swarmId: string | null): FleetLamp => {
@@ -43,7 +44,7 @@ export async function refreshSwarms(ctx: ToolContext): Promise<SwarmRefresh> {
     if (cur.swarmId !== swarmId) ctx.registry.update({ ...cur, swarmId });
     return { ...cur, swarmId };
   };
-  const lamps = await Promise.all(ctx.registry.list().map(async (l) => {
+  const lamps = await Promise.all((targets ?? ctx.registry.list()).map(async (l) => {
     if (!swarmKnown(l)) { unknown.add(l.deviceId); return l; }
     try {
       const sw = await ctx.registry.call(l.deviceId, (c) => c.get<{ member?: boolean; id?: string }>('/api/swarm'));

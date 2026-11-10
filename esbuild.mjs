@@ -27,3 +27,14 @@ await build({
   banner: { js: "#!/usr/bin/env node\nimport { createRequire as __cr } from 'node:module';\nconst require = __cr(import.meta.url);" },
   legalComments: 'none',
 });
+
+// The preview worker runs as its own process (src/preview/shade.ts finds it next to index.js).
+await build({
+  entryPoints: ['src/preview/preview-worker.mjs'],
+  outfile: 'plugin/dist/preview-worker.mjs',
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node20',
+  legalComments: 'none',
+});

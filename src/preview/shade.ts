@@ -1,12 +1,14 @@
-import vm from 'node:vm';
-// Byte-identical copy of lampos/portal/shade-runtime.js (scripts/check-vendor.mjs), bundled as text.
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+// Byte-identical copy of lampos/portal/shade-runtime.js (scripts/check-vendor.mjs), bundled as text
+// and handed to the worker over stdin.
 import RUNTIME from '../../vendor/shade-runtime.js?raw';
 
 export interface Rgb { r: number; g: number; b: number }
 export interface RenderOpts {
   w: number; h: number; frames: number; fps: number;
   params?: Record<string, number>; base?: Rgb;
-  /** Wall-clock budget for the whole render (default 3000 ms). */
+  /** Budget for running the script (default 3000 ms); the worker is killed shortly after. */
   timeoutMs?: number;
 }
 export interface ParamInfo { name: string; min: number; max: number; def: number; desc: string; type: 'range' | 'switch' }
@@ -20,73 +22,93 @@ export interface ScriptInfo {
 
 export const MAX_PIXELS = 16384;
 export const MAX_FRAMES = 60;
-
-const runtime = new vm.Script(RUNTIME, { filename: 'shade-runtime.js' });
-
-/*
- * Runs inside the sandbox. Input and output cross the boundary only as JSON strings (primitives),
- * so the script never gets hold of a host-realm object (whose constructor chain would lead out),
- * and everything it can run — including error formatting — happens under the vm timeout.
- */
-const DRIVER = `
-var __call = function (j) {
-  try {
-    var a = JSON.parse(j);
-    if (a.op === 'inspect') return JSON.stringify({ ok: PLShade.parseAnnotations(a.source) });
-    var r = PLShade.makeRunner(a.source);
-    var out = [];
-    for (var f = 0; f < a.frames; f++) {
-      out.push(r.render({ w: a.w, h: a.h, frame: f, time: f * 1000 / a.fps, base: a.base, params: a.params }));
-    }
-    return JSON.stringify({ ok: out });
-  } catch (e) {
-    var msg;
-    try { msg = (e && e.name ? e.name + ': ' : '') + (e && e.message !== undefined ? e.message : e); } catch (_) { msg = 'script error'; }
-    return JSON.stringify({ error: String(msg) });
-  }
-};
-`;
-const driver = new vm.Script(DRIVER);
-
-/** Run one request in a fresh context (a script can't leave globals behind for the next preview). */
-function sandboxed<T>(req: object, timeoutMs: number): T {
-  // A null-prototype sandbox: the context's global must not inherit the host's Object (whose
-  // constructor chain would hand a script the host Function and with it `process`).
-  const ctx = vm.createContext(Object.create(null) as object, { codeGeneration: { strings: true, wasm: false }, microtaskMode: 'afterEvaluate' });
-  runtime.runInContext(ctx);
-  driver.runInContext(ctx);
-  let text: unknown;
-  try {
-    text = vm.runInContext(`__call(${JSON.stringify(JSON.stringify(req))})`, ctx, { timeout: timeoutMs });
-  } catch (e) {
-    const m = String((e as { message?: unknown })?.message ?? '');
-    if (/timed out/i.test(m)) throw new Error(`script timed out after ${timeoutMs} ms (endless loop?)`);
-    throw new Error('script error');
-  }
-  if (typeof text !== 'string') throw new Error('script error');
-  const res = JSON.parse(text) as { ok?: T; error?: string };
-  if (res.error !== undefined) throw new Error(res.error);
-  return res.ok as T;
-}
-
-/** The script's `// @param`, `// @state`, `// @mode` annotations, as the lamp reads them. */
-export function inspectScript(source: string): ScriptInfo {
-  return sandboxed<ScriptInfo>({ op: 'inspect', source }, 1000);
-}
+export const WORKER_HEAP_MB = 128;
+/** Node startup + JSON transfer on top of the script budget before the watchdog kills the worker. */
+const STARTUP_MS = 2000;
+const MAX_OUTPUT = 32 * 1024 * 1024;
 
 /**
- * Render `frames` frames of a `shade()` script with the lamp's own runtime (vendored
- * shade-runtime.js). Frame f runs at time f·1000/fps ms. Each frame is w·h·3 bytes (RGB, row-major).
- * Throws the script's syntax/runtime error, or a timeout.
+ * The worker ships next to this module: src/preview/preview-worker.mjs in tests, and
+ * plugin/dist/preview-worker.mjs in the bundle (second esbuild entry, see esbuild.mjs).
  */
-export function renderFrames(source: string, opts: RenderOpts): Uint8Array[] {
-  const { w, h, frames, fps } = opts;
+const WORKER = fileURLToPath(new URL('./preview-worker.mjs', import.meta.url));
+const PERMISSION = process.allowedNodeEnvironmentFlags.has('--permission') ? '--permission' : '--experimental-permission';
+
+interface Job { op: 'inspect' | 'render'; source: string; w?: number; h?: number; frames?: number; fps?: number; params?: Record<string, number>; base?: Rgb }
+interface WorkerOut { info: ScriptInfo; frames?: string[] }
+
+/**
+ * Run one job in a fresh Node process: permission model on (it may read only its own file — no
+ * fs writes, child processes, workers or addons), a 128 MB heap, an empty environment, and a
+ * wall-clock watchdog that SIGKILLs it. The script itself runs in a vm context inside it. This
+ * process only parses the worker's JSON output, never touches objects the script made.
+ */
+function runWorker(job: Job, timeoutMs: number): Promise<WorkerOut> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [
+      PERMISSION, `--allow-fs-read=${WORKER}`, `--max-old-space-size=${WORKER_HEAP_MB}`, WORKER,
+    ], { stdio: ['pipe', 'pipe', 'pipe'], env: {}, windowsHide: true });
+    const out: Buffer[] = [];
+    let outLen = 0;
+    let err = '';
+    let why: string | undefined;
+    const kill = (reason: string) => { why ??= reason; child.kill('SIGKILL'); };
+    const watchdog = setTimeout(() => kill(`script timed out after ${timeoutMs} ms (endless loop?)`), timeoutMs + STARTUP_MS);
+    child.stdout.on('data', (d: Buffer) => {
+      outLen += d.length;
+      if (outLen > MAX_OUTPUT) kill('preview output too large'); else out.push(d);
+    });
+    child.stderr.on('data', (d: Buffer) => { if (err.length < 8192) err += d.toString('utf8'); });
+    child.stdin.on('error', () => { /* the worker died early; reported on close */ });
+    child.on('error', (e) => { clearTimeout(watchdog); reject(new Error(`preview worker failed to start: ${e.message}`)); });
+    child.on('close', (code, signal) => {
+      clearTimeout(watchdog);
+      if (why) return reject(new Error(why));
+      let res: { ok?: WorkerOut; error?: unknown } | undefined;
+      try { res = JSON.parse(Buffer.concat(out).toString('utf8')) as typeof res; } catch { res = undefined; }
+      if (res && typeof res.error === 'string') {
+        return reject(new Error(res.error === 'timeout' ? `script timed out after ${timeoutMs} ms (endless loop?)` : res.error));
+      }
+      if (res?.ok && code === 0) return resolve(res.ok);
+      if (/heap out of memory|Allocation failed/i.test(err) || signal === 'SIGABRT' || code === 134) {
+        return reject(new Error(`script ran out of memory (preview limit ${WORKER_HEAP_MB} MB)`));
+      }
+      reject(new Error(`preview worker failed (${signal ?? `exit ${code}`})`));
+    });
+    child.stdin.end(JSON.stringify({ runtime: RUNTIME, timeoutMs, req: job }));
+  });
+}
+
+function checkGrid(o: RenderOpts): void {
+  const { w, h, frames, fps } = o;
   if (!Number.isInteger(w) || !Number.isInteger(h) || w < 1 || h < 1 || w * h > MAX_PIXELS) throw new Error(`grid must be at least 1×1 and at most ${MAX_PIXELS} pixels`);
   if (!Number.isInteger(frames) || frames < 1 || frames > MAX_FRAMES) throw new Error(`frames must be 1–${MAX_FRAMES}`);
   if (!(fps > 0)) throw new Error('fps must be > 0');
-  const out = sandboxed<number[][]>(
+}
+
+/** The script's `// @param`, `// @state`, `// @mode` annotations, as the lamp reads them. */
+export async function inspectScript(source: string): Promise<ScriptInfo> {
+  return (await runWorker({ op: 'inspect', source }, 1000)).info;
+}
+
+/**
+ * Render a script's first frames with the lamp's own runtime (vendored shade-runtime.js) in a
+ * sandboxed worker process, plus its annotations. Frame f runs at time f·1000/fps ms; each frame is
+ * w·h·3 bytes (RGB, row-major). Rejects with the script's error, a timeout or out-of-memory.
+ */
+export async function previewScript(source: string, opts: RenderOpts): Promise<{ info: ScriptInfo; frames: Uint8Array[] }> {
+  checkGrid(opts);
+  const { w, h, frames, fps } = opts;
+  const r = await runWorker(
     { op: 'render', source, w, h, frames, fps, params: opts.params ?? {}, ...(opts.base ? { base: opts.base } : {}) },
     opts.timeoutMs ?? 3000,
   );
-  return out.map((f) => Uint8Array.from(f, (v) => v | 0));
+  const n = w * h * 3;
+  const out = (r.frames ?? []).map((b) => new Uint8Array(Buffer.from(b, 'base64')));
+  if (out.length !== frames || out.some((f) => f.length !== n)) throw new Error('preview worker returned malformed frames');
+  return { info: r.info, frames: out };
+}
+
+export async function renderFrames(source: string, opts: RenderOpts): Promise<Uint8Array[]> {
+  return (await previewScript(source, opts)).frames;
 }

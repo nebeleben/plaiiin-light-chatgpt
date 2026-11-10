@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { PNG } from 'pngjs';
@@ -6,10 +7,11 @@ import { inspectScript, renderFrames } from '../src/preview/shade';
 import { framesToPngStrip } from '../src/preview/png';
 
 const RED = 'function shade(x, y, idx, frame, base, params) { emit(255, 0, 0); }';
+const one = { w: 1, h: 1, frames: 1, fps: 10 };
 
 describe('renderFrames', () => {
-  it('renders an all-red script into w*h*3 frames', () => {
-    const frames = renderFrames(RED, { w: 4, h: 3, frames: 5, fps: 10 });
+  it('renders an all-red script into w*h*3 frames', async () => {
+    const frames = await renderFrames(RED, { w: 4, h: 3, frames: 5, fps: 10 });
     expect(frames).toHaveLength(5);
     for (const f of frames) {
       expect(f).toBeInstanceOf(Uint8Array);
@@ -18,32 +20,37 @@ describe('renderFrames', () => {
     }
   });
 
-  it('applies @param defaults and overrides, base color, frame and time (ms)', () => {
+  it('applies @param defaults and overrides, base color, frame and time (ms)', async () => {
     const src = [
       '// @param level 0..255 = 10 brightness',
       'function shade(x, y, idx, frame, base, params) { emit(params.level, frame, (time / 100) | 0); }',
     ].join('\n');
-    const def = renderFrames(src, { w: 1, h: 1, frames: 3, fps: 10 });
+    const def = await renderFrames(src, { w: 1, h: 1, frames: 3, fps: 10 });
     expect([...def[2]!]).toEqual([10, 2, 2]);         // frame 2 at 10 fps = 200 ms
-    const ov = renderFrames(src, { w: 1, h: 1, frames: 1, fps: 10, params: { level: 99 } });
+    const ov = await renderFrames(src, { ...one, params: { level: 99 } });
     expect([...ov[0]!]).toEqual([99, 0, 0]);
-    const bright = renderFrames('function shade(){ emitBright(1); }', { w: 1, h: 1, frames: 1, fps: 10, base: { r: 1, g: 2, b: 3 } });
+    const bright = await renderFrames('function shade(){ emitBright(1); }', { ...one, base: { r: 1, g: 2, b: 3 } });
     expect([...bright[0]!]).toEqual([1, 2, 3]);
   });
 
-  it('throws the syntax error', () => {
-    expect(() => renderFrames('function shade( {', { w: 2, h: 2, frames: 1, fps: 10 })).toThrow(/SyntaxError|Unexpected/);
-    expect(() => renderFrames('var x = 1;', { w: 2, h: 2, frames: 1, fps: 10 })).toThrow(/shade/);
+  it('rejects with the syntax error', async () => {
+    await expect(renderFrames('function shade( {', { w: 2, h: 2, frames: 1, fps: 10 })).rejects.toThrow(/SyntaxError|Unexpected/);
+    await expect(renderFrames('var x = 1;', { w: 2, h: 2, frames: 1, fps: 10 })).rejects.toThrow(/shade/);
   });
 
-  it('runs the script away from Node: no process/require, and an endless loop times out', () => {
-    const f = renderFrames("function shade(){ emit(typeof process === 'undefined' && typeof require === 'undefined' ? 255 : 0, 0, 0); }",
-      { w: 1, h: 1, frames: 1, fps: 10 });
-    expect(f[0]![0]).toBe(255);
-    expect(() => renderFrames('function shade(){ for(;;){} }', { w: 1, h: 1, frames: 1, fps: 10, timeoutMs: 200 })).toThrow(/timed out/);
+  it('inspectScript lists params and state', async () => {
+    const info = await inspectScript('// @param speed 0..5 = 1 how fast\n// @state t : 0\nfunction shade(){}');
+    expect(info.params).toEqual([{ name: 'speed', min: 0, max: 5, def: 1, desc: 'how fast', type: 'range' }]);
+    expect(info.frameState).toEqual([{ name: 't', def: 0 }]);
+  });
+});
+
+describe('preview sandbox (scripts are untrusted)', () => {
+  it('an endless loop times out', async () => {
+    await expect(renderFrames('function shade(){ for(;;){} }', { ...one, timeoutMs: 200 })).rejects.toThrow(/timed out/);
   });
 
-  it('constructor chains lead nowhere outside the sandbox', () => {
+  it('constructor chains lead nowhere outside the sandbox', async () => {
     const attempts = [
       "var g = (function(){ return this; })(); var P = g.constructor.constructor('return typeof process')();",
       "var P = emit.constructor('return typeof process')();",
@@ -51,21 +58,40 @@ describe('renderFrames', () => {
       "var P = (function(){ try { null.x } catch(e) { return e.constructor.constructor('return typeof process')(); } })();",
     ];
     for (const a of attempts) {
-      const f = renderFrames(`${a} function shade(){ emit(P === 'undefined' ? 255 : 0, 0, 0); }`, { w: 1, h: 1, frames: 1, fps: 10 });
+      const f = await renderFrames(`${a} function shade(){ emit(P === 'undefined' ? 255 : 0, 0, 0); }`, one);
       expect(f[0]![0], a).toBe(255);
     }
   });
 
-  it('inspectScript lists params and state', () => {
-    const info = inspectScript('// @param speed 0..5 = 1 how fast\n// @state t : 0\nfunction shade(){}');
-    expect(info.params).toEqual([{ name: 'speed', min: 0, max: 5, def: 1, desc: 'how fast', type: 'range' }]);
-    expect(info.frameState).toEqual([{ name: 't', def: 0 }]);
+  it('require, process and import are unavailable to the script', async () => {
+    const f = await renderFrames(
+      "var R = typeof require, P = typeof process, M = typeof module;\n" +
+      "function shade(){ emit(R === 'undefined' && P === 'undefined' && M === 'undefined' ? 255 : 0, 0, 0); }", one);
+    expect(f[0]![0]).toBe(255);
+    await expect(renderFrames("var fs = require('fs'); function shade(){ emit(1,1,1); }", one)).rejects.toThrow(/require is not defined/);
   });
+
+  it('a getter on a thrown object that loops forever is killed by the watchdog', async () => {
+    const thrown = "JSON.stringify = function(){ return '{}'; }; throw { get message(){ for(;;){} }, get name(){ for(;;){} } };";
+    // a getter the worker's own code reads after the vm call returned (outside the vm timeout)
+    const proto = "Object.defineProperty(Object.prototype, 'error', { get: function(){ for(;;){} } }); function shade(){ emit(1,1,1); }";
+    for (const src of [thrown, proto]) {
+      const t0 = Date.now();
+      await expect(renderFrames(src, { ...one, timeoutMs: 200 })).rejects.toThrow(/timed out/);
+      expect(Date.now() - t0).toBeLessThan(5000);
+    }
+  });
+
+  it('a memory bomb fails on its own and later previews still work', async () => {
+    const bomb = "var a = []; for(;;) a.push(new Array(1e6).fill(1.5)); function shade(){}";
+    await expect(renderFrames(bomb, { ...one, timeoutMs: 20000 })).rejects.toThrow(/out of memory/);
+    expect([...(await renderFrames(RED, one))[0]!]).toEqual([255, 0, 0]);
+  }, 30000);
 });
 
 describe('framesToPngStrip', () => {
-  it('puts the frames side by side, nearest-neighbour scaled', () => {
-    const frames = renderFrames(RED, { w: 4, h: 2, frames: 3, fps: 10 });
+  it('puts the frames side by side, nearest-neighbour scaled', async () => {
+    const frames = await renderFrames(RED, { w: 4, h: 2, frames: 3, fps: 10 });
     const png = PNG.sync.read(framesToPngStrip(frames, 4, 2, 5));
     expect(png.width).toBe(4 * 3 * 5);
     expect(png.height).toBe(2 * 5);
@@ -73,11 +99,19 @@ describe('framesToPngStrip', () => {
   });
 
   it('defaults to a scale that makes the strip at least 256 px wide', () => {
-    const frames = renderFrames(RED, { w: 8, h: 8, frames: 2, fps: 10 });
-    const png = PNG.sync.read(framesToPngStrip(frames, 8, 8));
+    const f = new Uint8Array(8 * 8 * 3);
+    const png = PNG.sync.read(framesToPngStrip([f, f], 8, 8));
     expect(png.width).toBeGreaterThanOrEqual(256);
     expect(png.width % 16).toBe(0);
     expect(png.height).toBe(png.width / 2);
+  });
+
+  it('never exceeds 4096 px: frames that do not fit are left out', () => {
+    const w = 256, f = new Uint8Array(w * 1 * 3);
+    const png = PNG.sync.read(framesToPngStrip(Array(60).fill(f), w, 1));
+    expect(png.width).toBeLessThanOrEqual(4096);
+    expect(png.width % w).toBe(0);
+    expect(PNG.sync.read(framesToPngStrip(Array(60).fill(f), w, 1, 3)).width).toBeLessThanOrEqual(4096);
   });
 
   it('keeps distinct pixels where they are', () => {
@@ -92,8 +126,8 @@ describe('framesToPngStrip', () => {
 });
 
 describe('vendored shade runtime', () => {
-  it('check-vendor passes on a clean tree', () => {
-    const out = execFileSync(process.execPath, [join(__dirname, '..', 'scripts', 'check-vendor.mjs')], { encoding: 'utf8' });
-    expect(out).toMatch(/identical|skipped/);
+  it('check-vendor passes on a clean tree (identical when the canonical file exists)', () => {
+    const out = execFileSync(process.execPath, [join(__dirname, '..', 'scripts', 'check-vendor.mjs')], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    if (existsSync(join(__dirname, '..', '..', 'lampos', 'portal', 'shade-runtime.js'))) expect(out).toMatch(/is identical to/);
   });
 });

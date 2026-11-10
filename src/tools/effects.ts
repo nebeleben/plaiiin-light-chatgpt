@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -6,11 +7,11 @@ import { refusal, type Need } from '../lamp/access';
 import type { LampClient } from '../lamp/client';
 import { LampHttpError } from '../lamp/errors';
 import { framesToPngStrip } from '../preview/png';
-import { inspectScript, MAX_FRAMES, renderFrames, type Rgb } from '../preview/shade';
+import { MAX_FRAMES, previewScript, type Rgb } from '../preview/shade';
 import type { FleetLamp } from '../store/fleet';
 import { Library } from '../store/library';
 import { scrub } from '../util/scrub';
-import { CONFIRM_REFUSED } from './confirm';
+import { CONFIRM_REFUSED, type ConfirmationRequest } from './confirm';
 import {
   errorText, explain, failure, guard, lampArg, lampsArg, normLamps, result, type ToolContext,
 } from './context';
@@ -75,6 +76,23 @@ async function single<T extends object>(ctx: ToolContext, lamp: string, need: Ne
   return result(r, !r!.ok);
 }
 
+const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v ?? null)).digest('hex');
+
+/**
+ * Two-step confirmation whose token also covers what will actually be written: a hash of the content
+ * and the sorted list of what gets replaced. If either changed since the token was issued, the call
+ * is refused and a fresh confirmation request (with the new summary) comes back instead.
+ */
+function confirmContent(
+  ctx: ToolContext, tool: string, args: object, confirm: string | undefined,
+  content: unknown, replacing: string[], summary: string,
+): ConfirmationRequest | (ConfirmationRequest & { refused: string }) | undefined {
+  const bound = { ...args, __content: digest(content), __replacing: [...replacing].sort() };
+  if (confirm !== undefined && ctx.confirm.consume(tool, bound, confirm)) return undefined;
+  const fresh = ctx.confirm.request(tool, bound, summary);
+  return confirm === undefined ? fresh : { ...fresh, refused: CONFIRM_REFUSED };
+}
+
 type WriteState = 'new' | 'replace' | 'same';
 interface Write { lamp: FleetLamp; state: WriteState }
 
@@ -115,15 +133,13 @@ async function writeEffect(
   targets: FleetLamp[], name: string, src: string, tunes: Record<string, number> | undefined, extra: object = {},
 ): Promise<CallToolResult> {
   const { writes, done } = await planWrites(ctx, targets, name, src);
-  const replacing = writes.filter((w) => w.state === 'replace').map((w) => w.lamp.name);
+  const replacing = writes.filter((w) => w.state === 'replace');
   if (replacing.length) {
-    if (confirm === undefined) {
-      const others = writes.filter((w) => w.state !== 'replace').map((w) => w.lamp.name);
-      return result(ctx.confirm.request(tool, args,
-        `Replace the existing effect "${name}" on ${replacing.join(', ')} with the new script` +
-        `${others.length ? `; also write it to ${others.join(', ')}` : ''}.`));
-    }
-    if (!ctx.confirm.consume(tool, args, confirm)) return failure(CONFIRM_REFUSED);
+    const others = writes.filter((w) => w.state !== 'replace').map((w) => w.lamp.name);
+    const ask = confirmContent(ctx, tool, args, confirm, { src, tunes: tunes ?? null }, replacing.map((w) => w.lamp.deviceId),
+      `Replace the existing effect "${name}" on ${replacing.map((w) => w.lamp.name).join(', ')} with the new script` +
+      `${others.length ? `; also write it to ${others.join(', ')}` : ''}.`);
+    if (ask) return result(ask);
   }
   const ids = new Set(writes.map((w) => w.lamp.deviceId));
   const stateOf = new Map(writes.map((w) => [w.lamp.deviceId, w.state]));
@@ -237,18 +253,19 @@ export function registerEffectsTools(server: McpServer, ctx: ToolContext): void 
     if (!grid) return failure('pass `lamp` or both `w` and `h`');
     let info, rendered;
     try {
-      info = inspectScript(src);
-      rendered = renderFrames(src, { w: grid.w, h: grid.h, frames, fps, params, base });
+      ({ info, frames: rendered } = await previewScript(src, { w: grid.w, h: grid.h, frames, fps, params, base }));
     } catch (e) {
       return failure(errorText(e));
     }
     const png = framesToPngStrip(rendered, grid.w, grid.h);
+    const width = png.readUInt32BE(16), height = png.readUInt32BE(20);
+    const shown = width / (grid.w * (height / grid.h));
     const known = new Set(info.params.map((p) => p.name));
     const unknown = Object.keys(params ?? {}).filter((k) => !known.has(k));
     const dark = rendered.every((f) => f.every((v) => v === 0));
     const summary = {
       ok: true, grid, frames, fps, ...(base ? { base } : {}),
-      image: { width: png.readUInt32BE(16), height: png.readUInt32BE(20), layout: 'frames left to right' },
+      image: { width, height, layout: 'frames left to right', ...(shown < frames ? { framesShown: shown, note: 'the strip is capped at 4096 px; later frames are left out' } : {}) },
       params: info.params.map((p) => ({ name: p.name, min: p.min, max: p.max, default: p.def, value: params?.[p.name] ?? p.def, description: p.desc, type: p.type })),
       state: { frame: info.frameState.map((s) => s.name), pixel: info.pixelState.map((s) => s.name) },
       ...(info.mode ? { mode: info.mode } : {}),
@@ -351,7 +368,12 @@ export function registerEffectsTools(server: McpServer, ctx: ToolContext): void 
     }
     const name = args.name;
     return result({ results: await fanout(ctx, targets.map((l) => l.deviceId), TUNES, async (c) => {
-      if (!present(await listing(c), name)) throw new Error(`script ${name} isn't on this lamp`);
+      const ls = await listing(c);
+      if (!present(ls, name)) throw new Error(`script ${name} isn't on this lamp`);
+      const entry = ls.effects?.find((e) => e.name === name);
+      // Tune only the same built-in: never an unrelated uploaded script that happens to share the name.
+      if (entry && entry.source !== 'hardcoded') throw new Error(`${name} on this lamp is an uploaded script, not the built-in; tunes not copied`);
+      if (!entry) return { name, source: false, warning: 'this lamp doesn\'t say whether its effect is the built-in; tunes not copied' };
       const applied = tunes ? values(await putTunes(c, name, tunes)) : undefined;
       return { name, source: false, ...(applied ? { tunes: applied } : {}) };
     }) });
@@ -368,19 +390,31 @@ export function registerEffectsTools(server: McpServer, ctx: ToolContext): void 
     title: 'Save effect to the library',
     description:
       'Save an uploaded effect from a lamp (source + its current tune values) into the library on this computer, under ' +
-      'the same name (replacing a library entry of that name). Built-ins have no source and can\'t be saved. Reads the lamp only.',
-    inputSchema: { lamp: lampArg, name: newEffectName },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ lamp, name }) => guard(() => single(ctx, lamp, READ, async (c) => {
-    const ls = await listing(c);
-    if (builtIn(ls, name)) throw new Error(`${BUILTIN_NO_SOURCE(name)}; only uploaded effects can be saved`);
-    if (!present(ls, name)) throw new Error(`no effect ${name} on this lamp`);
-    const src = await c.getText(`/api/js/${enc(name)}`);
-    const tunes = await readTunes(c, name);
-    const replaced = library.list('effects').includes(name);
+      'the same name. Replacing a different library entry of that name first returns {needsConfirmation, summary, ' +
+      'confirm}: show the summary and repeat with `confirm` only after the user agrees. Built-ins have no source and ' +
+      'can\'t be saved. Reads the lamp only.',
+    inputSchema: { lamp: lampArg, name: newEffectName, confirm: confirmArg },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  }, async (args) => guard(async () => {
+    const { name } = args;
+    const [r] = await fanout(ctx, [args.lamp], READ, async (c) => {
+      const ls = await listing(c);
+      if (builtIn(ls, name)) throw new Error(`${BUILTIN_NO_SOURCE(name)}; only uploaded effects can be saved`);
+      if (!present(ls, name)) throw new Error(`no effect ${name} on this lamp`);
+      return { src: await c.getText(`/api/js/${enc(name)}`), tunes: await readTunes(c, name) };
+    });
+    if (!r!.ok) return result(r, true);
+    const { src, tunes } = r!;
+    const existing = library.list('effects').includes(name) ? library.readEffect(name) : undefined;
+    const same = existing && existing.source === src && digest(existing.params ?? null) === digest(tunes ?? null);
+    if (existing && !same) {
+      const ask = confirmContent(ctx, 'library_save_effect', args, args.confirm, { src, tunes: tunes ?? null }, [name],
+        `Replace the library effect "${name}" with the version from ${r!.lamp}.`);
+      if (ask) return result(ask);
+    }
     library.writeEffect(name, src, tunes);
-    return { name, replaced, ...(tunes ? { tunes } : {}) };
-  })));
+    return result({ lamp: r!.lamp, deviceId: r!.deviceId, ok: true, name, replaced: !!existing && !same, ...(tunes ? { tunes } : {}) });
+  }));
 
   server.registerTool('library_push_effect', {
     title: 'Push a library effect to lamps',

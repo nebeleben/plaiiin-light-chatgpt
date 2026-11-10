@@ -113,7 +113,8 @@ describe('effect_upload / effect_delete', () => {
     expect(ask.summary).toBe('Replace the existing effect "red" on Alpha with the new script; also write it to Beta.');
     expect(puts(a, '/api/js/red') + puts(b, '/api/js/red')).toBe(0);
     const wrong = await t.call('effect_upload', { lamps: 'all', name: 'red', source: 'other', confirm: ask.confirm });
-    expect(wrong).toMatchObject({ ok: false });
+    expect(wrong).toMatchObject({ needsConfirmation: true, refused: expect.stringMatching(/invalid, expired/) });
+    expect(wrong.confirm).not.toBe(ask.confirm);
     expect(a.state.effects.get('red')).toBe('old');
     const ask2 = await t.call('effect_upload', { lamps: 'all', name: 'red', source: SRC });
     const done = await t.call('effect_upload', { lamps: 'all', name: 'red', source: SRC, confirm: ask2.confirm });
@@ -132,6 +133,22 @@ describe('effect_upload / effect_delete', () => {
     expect(r.results[0]).toMatchObject({ ok: false, skipped: true, reason: 'rainbow is a built-in effect on this lamp; pick another name' });
     const bad = await t.call('effect_upload', { lamps: 'Alpha', name: 'broken', source: 'SYNTAXERR' });
     expect(bad.results[0]).toMatchObject({ ok: false, reason: 'script error: SyntaxError' });
+  });
+
+  it('a confirm is refused when what gets replaced changed in between; a fresh request comes back', async () => {
+    const t = await harness();
+    const a = await t.addFake({ deviceId: 'aaaaaaaaaaaa', name: 'Alpha' });
+    const b = await t.addFake({ deviceId: 'bbbbbbbbbbbb', name: 'Beta' });
+    a.state.effects.set('red', 'old');
+    const ask = await t.call('effect_upload', { lamps: 'all', name: 'red', source: SRC });
+    b.state.effects.set('red', 'someone else uploaded this meanwhile');
+    const r = await t.call('effect_upload', { lamps: 'all', name: 'red', source: SRC, confirm: ask.confirm });
+    expect(r).toMatchObject({ needsConfirmation: true, refused: expect.any(String) });
+    expect(r.summary).toBe('Replace the existing effect "red" on Alpha, Beta with the new script.');
+    expect(a.state.effects.get('red')).toBe('old');
+    expect(b.state.effects.get('red')).toBe('someone else uploaded this meanwhile');
+    const done = await t.call('effect_upload', { lamps: 'all', name: 'red', source: SRC, confirm: r.confirm });
+    expect(done.results.every((x: any) => x.ok && x.replaced)).toBe(true);
   });
 
   it('effect_delete always confirms', async () => {
@@ -176,6 +193,38 @@ describe('effect tunes', () => {
   });
 });
 
+describe('effect_tunes_set swarm grouping', () => {
+  it('re-reads membership: a lamp that left the swarm since it was added gets its own request', async () => {
+    const t = await harness();
+    const a = await t.addFake({ deviceId: 'aaaaaaaaaaaa', name: 'Alpha', swarmId: 'sw1' });
+    const b = await t.addFake({ deviceId: 'bbbbbbbbbbbb', name: 'Beta', swarmId: 'sw1' });
+    expect(t.fleet.get('bbbbbbbbbbbb')!.swarmId).toBe('sw1');
+    b.state.swarm = { member: false, id: '', enabled: false, channel: 1 };
+    const r = await t.call('effect_tunes_set', { lamps: ['Alpha', 'Beta'], name: 'rainbow', values: { speed: 2 } });
+    const path = '/api/js/rainbow/params';
+    expect(puts(a, path)).toBe(1);
+    expect(puts(b, path)).toBe(1);
+    expect(r.results.some((x: any) => x.viaSwarm)).toBe(false);
+    expect(t.fleet.get('bbbbbbbbbbbb')!.swarmId).toBeNull();
+  });
+
+  it('when the first member fails and the next succeeds, the failed one is reached viaSwarm', async () => {
+    const t = await harness();
+    const a = await t.addFake({ deviceId: 'aaaaaaaaaaaa', name: 'Alpha', swarmId: 'sw1' });
+    const b = await t.addFake({ deviceId: 'bbbbbbbbbbbb', name: 'Beta', swarmId: 'sw1' });
+    a.state.override = (req, res, path) => {
+      if (req.method !== 'PUT') return false;
+      res.writeHead(500, { 'Content-Type': 'text/plain' }); res.end('busy'); return true;
+    };
+    const r = await t.call('effect_tunes_set', { lamps: ['Alpha', 'Beta'], name: 'rainbow', values: { speed: 2 } });
+    expect(r.results).toEqual([
+      { lamp: 'Alpha', deviceId: 'aaaaaaaaaaaa', ok: true, viaSwarm: 'Beta' },
+      expect.objectContaining({ lamp: 'Beta', ok: true, values: { speed: 2 } }),
+    ]);
+    expect(puts(b, '/api/js/rainbow/params')).toBe(1);
+  });
+});
+
 describe('effect_copy', () => {
   it('copies source and tune values', async () => {
     const t = await harness();
@@ -201,6 +250,17 @@ describe('effect_copy', () => {
     expect(r.results.find((x: any) => x.lamp === 'Gamma')).toMatchObject({ ok: true, source: false });
     expect(c.state.params.get('rainbow')).toEqual({ speed: 4 });
     expect(b.state.requests.some((x) => x.method === 'PUT')).toBe(false);
+  });
+
+  it('a built-in copy never tunes an uploaded script of the same name', async () => {
+    const t = await harness();
+    const a = await t.addFake({ deviceId: 'aaaaaaaaaaaa', name: 'Alpha' });
+    const b = await t.addFake({ deviceId: 'bbbbbbbbbbbb', name: 'Beta' });
+    a.state.params.set('rainbow', { speed: 4 });
+    b.state.hardcoded.delete('rainbow'); b.state.effects.set('rainbow', '// @param speed 0..10 = 1\nfunction shade(){}');
+    const r = await t.call('effect_copy', { from: 'Alpha', name: 'rainbow', to: 'Beta' });
+    expect(r.results[0]).toMatchObject({ ok: false, reason: 'rainbow on this lamp is an uploaded script, not the built-in; tunes not copied' });
+    expect(b.state.params.get('rainbow')).toBeUndefined();
   });
 
   it('overwriting a different script on the target needs confirmation', async () => {
@@ -242,6 +302,29 @@ describe('effect library tools', () => {
     const again = await t.call('library_push_effect', { name: 'red', lamps: 'Alpha' });
     expect(again).toMatchObject({ needsConfirmation: true });
     expect(again.summary).toMatch(/Replace the existing effect "red" on Alpha/);
+  });
+
+  it('library_save_effect asks before replacing a different library entry; a library change voids the push confirm', async () => {
+    const t = await harness();
+    const a = await t.addFake({ deviceId: 'aaaaaaaaaaaa', name: 'Alpha' });
+    const b = await t.addFake({ deviceId: 'bbbbbbbbbbbb', name: 'Beta' });
+    a.state.effects.set('red', SRC);
+    await t.call('library_save_effect', { lamp: 'Alpha', name: 'red' });
+    expect(await t.call('library_save_effect', { lamp: 'Alpha', name: 'red' })).toMatchObject({ ok: true, replaced: false }); // identical
+    a.state.effects.set('red', 'function shade(){ emit(0,0,255); }');
+    const ask = await t.call('library_save_effect', { lamp: 'Alpha', name: 'red' });
+    expect(ask).toMatchObject({ needsConfirmation: true, summary: 'Replace the library effect "red" with the version from Alpha.' });
+    expect(await t.call('library_save_effect', { lamp: 'Alpha', name: 'red', confirm: ask.confirm })).toMatchObject({ ok: true, replaced: true });
+
+    b.state.effects.set('red', 'old on Beta');
+    const push = await t.call('library_push_effect', { name: 'red', lamps: 'Beta' });
+    expect(push).toMatchObject({ needsConfirmation: true });
+    // the library content changes between the two calls
+    const { Library } = await import('../src/store/library');
+    new Library(`${t.dir}/library`).writeEffect('red', 'function shade(){ emit(9,9,9); }');
+    const r = await t.call('library_push_effect', { name: 'red', lamps: 'Beta', confirm: push.confirm });
+    expect(r).toMatchObject({ needsConfirmation: true, refused: expect.any(String) });
+    expect(b.state.effects.get('red')).toBe('old on Beta');
   });
 
   it('library_save_effect refuses a built-in and unknown library names fail', async () => {
