@@ -155,4 +155,51 @@ describe('scene tools', () => {
     await t.call('scene_put', { ...edit, confirm: (await t.call('scene_put', edit)).confirm });
     expect(await t.call('library_save_scene', { lamp: 'Alpha', name: 'evening' })).toMatchObject({ needsConfirmation: true });
   });
+
+  it('scene_put asks when only nested params differ', async () => {
+    const t = await harness();
+    const a = await t.addFake({ deviceId: 'aaaaaaaaaaaa', name: 'Alpha' });
+    a.state.scenes.set('s', { script: 'b', params: { speed: 1 } });
+    const ask = await t.call('scene_put', { lamps: 'Alpha', name: 's', doc: { script: 'b', params: { speed: 9 } } });
+    expect(ask.needsConfirmation).toBe(true);
+    expect(a.state.scenes.get('s')).toEqual({ script: 'b', params: { speed: 1 } });
+  });
+
+  it('re-running an identical scene_copy does not ask again', async () => {
+    const t = await harness();
+    await sourceLamp(t);
+    const b = await t.addFake({ deviceId: 'bbbbbbbbbbbb', name: 'Beta', grid: GRID });
+    for (const name of ['evening', 'pic']) {
+      const first = await t.call('scene_copy', { from: 'Alpha', name, to: 'Beta' });
+      expect(first.results[0].ok).toBe(true);
+      const again = await t.call('scene_copy', { from: 'Alpha', name, to: 'Beta' });
+      expect(again.needsConfirmation).toBeUndefined();
+      expect(again.results[0].ok).toBe(true);
+    }
+    expect(b.state.images.size).toBe(1);
+  });
+
+  it('scene_delete confirms only lamps that have the scene and reports the rest as skipped', async () => {
+    const t = await harness();
+    const a = await t.addFake({ deviceId: 'aaaaaaaaaaaa', name: 'Alpha' });
+    const b = await t.addFake({ deviceId: 'bbbbbbbbbbbb', name: 'Beta' });
+    const u = await t.addFake({ deviceId: 'uuuuuuuuuuuu', name: 'User', role: 'user' });
+    a.state.scenes.set('rain', {}); u.state.scenes.set('rain', {});
+    const ask = await t.call('scene_delete', { lamps: 'all', name: 'rain' });
+    expect(ask.needsConfirmation).toBe(true);
+    expect(ask.summary).toContain('Alpha');
+    expect(ask.summary).not.toContain('Beta');
+    expect(ask.summary).not.toContain('User');
+    expect(ask.skipped.map((x: any) => x.lamp).sort()).toEqual(['Beta', 'User']);
+    const done = await t.call('scene_delete', { lamps: 'all', name: 'rain', confirm: ask.confirm });
+    expect(done.results.filter((x: any) => x.ok).map((x: any) => x.lamp)).toEqual(['Alpha']);
+    expect(done.results.filter((x: any) => x.skipped)).toHaveLength(2);
+    expect(a.state.scenes.has('rain')).toBe(false);
+    expect(u.state.scenes.has('rain')).toBe(true);
+    // nothing to delete anywhere: no confirmation
+    const none = await t.call('scene_delete', { lamps: 'all', name: 'rain' });
+    expect(none.needsConfirmation).toBeUndefined();
+    expect(none.results.every((x: any) => x.skipped)).toBe(true);
+    void b;
+  });
 });

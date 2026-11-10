@@ -6,7 +6,7 @@ const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
 export interface ConfirmationRequest { needsConfirmation: true; summary: string; confirm: string }
 
 /** Key-sorted JSON with `undefined` dropped, so `{a,b}` and `{b,a}` hash the same. */
-function stable(v: unknown): string {
+export function stable(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map((x) => (x === undefined ? 'null' : stable(x))).join(',')}]`;
   if (v && typeof v === 'object') {
     const o = v as Record<string, unknown>;

@@ -8,8 +8,8 @@ import { LampHttpError } from '../lamp/errors';
 import { builtIn, listing, present, readTunes } from '../lamp/scripts';
 import type { FleetLamp } from '../store/fleet';
 import { Library } from '../store/library';
-import { copyScene, type ImagePayload, type SceneDoc, type ScriptPayload } from '../sync/copy';
-import { confirmContent, digest } from './confirm';
+import { copyScene, findSavedImage, type ImagePayload, type SceneDoc, type ScriptPayload } from '../sync/copy';
+import { confirmContent, digest, stable } from './confirm';
 import { explain, failure, guard, lampArg, lampsArg, normLamps, result, type ToolContext } from './context';
 import { fanout, single, swarmFanout } from './fanout';
 import { fetchImage, gridOf } from './images';
@@ -76,8 +76,7 @@ const bundleKey = (b: Bundle) => ({
 });
 
 const sansPower = (s: SceneDoc): SceneDoc => { const { on: _p, ...rest } = s; return rest; };
-const sameDoc = (a: object, b: object) => digest(a) === digest(b);
-const withoutKeyOrder = (o: object): object => JSON.parse(JSON.stringify(o, Object.keys(o).sort()));
+const sameDoc = (a: object, b: object) => stable(a) === stable(b);
 
 /**
  * Which of `targets` would lose something: a scene of that name, or (when copying a bundle with a script
@@ -85,8 +84,19 @@ const withoutKeyOrder = (o: object): object => JSON.parse(JSON.stringify(o, Obje
  */
 async function overwrites(ctx: ToolContext, targets: FleetLamp[], name: string, b?: Bundle): Promise<{ replacing: string[]; what: string[] }> {
   const ids = targets.filter((l) => allows(l, SCENES)).map((l) => l.deviceId);
-  const seen = await fanout(ctx, ids, READ, async (c) => {
-    const scene = await getScene(c, name);
+  const seen = await fanout(ctx, ids, READ, async (c, l) => {
+    const existing = await getScene(c, name);
+    let scene = false;
+    if (existing && b) {
+      // what the copy would write there: the source scene without power, its image as the target's id
+      const expected: SceneDoc = sansPower(b.scene);
+      if (typeof expected.image === 'string') {
+        const grid = await gridOf(c, l);
+        const id = b.image && b.image.w === grid.w && b.image.h === grid.h ? await findSavedImage(c, b.image) : undefined;
+        if (id) expected.image = id; else delete expected.image;
+        scene = !id && b.image && b.image.w === grid.w && b.image.h === grid.h ? true : !sameDoc(sansPower(existing), expected);
+      } else scene = !sameDoc(sansPower(existing), expected);
+    } else scene = !!existing;
     let script = false;
     if (b?.script?.source !== undefined) {
       const ls = await listing(c);
@@ -99,10 +109,7 @@ async function overwrites(ctx: ToolContext, targets: FleetLamp[], name: string, 
   const what: string[] = [];
   for (const r of seen) {
     if (!r.ok) continue;
-    if (r.scene && (!b || !sameDoc(withoutKeyOrder(sansPower(r.scene)), withoutKeyOrder(sansPower(b.scene))) || b.image || b.script)) {
-      replacing.push(`scene@${r.deviceId}`);
-      what.push(`scene "${name}" on ${r.lamp}`);
-    }
+    if (r.scene) { replacing.push(`scene@${r.deviceId}`); what.push(`scene "${name}" on ${r.lamp}`); }
     if (r.script) { replacing.push(`script@${r.deviceId}`); what.push(`script "${b!.script!.name}" on ${r.lamp}`); }
   }
   return { replacing, what };
@@ -217,14 +224,30 @@ export function registerScenesTools(server: McpServer, ctx: ToolContext): void {
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   }, async (args) => guard(async () => {
     const targets = ctx.registry.resolveTargets(normLamps(args.lamps));
-    const ids = targets.map((l) => l.deviceId);
+    const skipped: Array<{ lamp: string; deviceId: string; ok: false; skipped: true; reason: string }> = [];
+    const checkable: FleetLamp[] = [];
+    for (const l of targets) {
+      const refused = refusal(l, SCENES);
+      if (refused) skipped.push({ lamp: l.name, deviceId: l.deviceId, ok: false, skipped: true, reason: refused });
+      else checkable.push(l);
+    }
+    const seen = await fanout(ctx, checkable.map((l) => l.deviceId), READ, (c) => getScene(c, args.name).then((s) => ({ has: s !== null })));
+    const real: FleetLamp[] = [];
+    for (const r of seen) {
+      const l = checkable.find((x) => x.deviceId === r.deviceId)!;
+      if (r.ok && r.has) real.push(l);
+      else skipped.push({ lamp: r.lamp, deviceId: r.deviceId, ok: false, skipped: true, reason: r.ok ? `no scene ${args.name} on this lamp` : r.reason });
+    }
+    if (!real.length) return result({ results: skipped });
+    const ids = real.map((l) => l.deviceId);
     const ask = confirmContent(ctx, 'scene_delete', args, args.confirm, { name: args.name, ids: [...ids].sort() }, ids,
-      `Delete the scene "${args.name}" from ${targets.map((l) => l.name).join(', ')}. This can't be undone.`);
-    if (ask) return result(ask);
-    return result({ results: await fanout(ctx, ids, SCENES, async (c) => {
+      `Delete the scene "${args.name}" from ${real.map((l) => l.name).join(', ')}. This can't be undone.`);
+    if (ask) return result({ ...ask, ...(skipped.length ? { skipped } : {}) });
+    const done = await fanout(ctx, ids, SCENES, async (c) => {
       await c.send('DELETE', `/api/scenes/${enc(args.name)}`);
       return { deleted: args.name };
-    }) });
+    });
+    return result({ results: [...done, ...skipped] });
   }));
 
   server.registerTool('scene_copy', {
@@ -293,7 +316,7 @@ export function registerScenesTools(server: McpServer, ctx: ToolContext): void {
 async function differing(ctx: ToolContext, targets: FleetLamp[], name: string, doc: object): Promise<Array<{ lamp: string; deviceId: string }>> {
   const ids = targets.filter((l) => allows(l, SCENES)).map((l) => l.deviceId);
   const seen = await fanout(ctx, ids, READ, (c) => getScene(c, name).then((scene) => ({ scene })));
-  return seen.filter((r) => r.ok && r.scene && !sameDoc(withoutKeyOrder(r.scene), withoutKeyOrder(doc))).map((r) => ({ lamp: r.lamp, deviceId: r.deviceId }));
+  return seen.filter((r) => r.ok && r.scene && !sameDoc(r.scene, doc)).map((r) => ({ lamp: r.lamp, deviceId: r.deviceId }));
 }
 
 /** Library file: `{scene, script?: {name, source?, params?}, image?: {w, h, label?, pixels: base64}}`. */
