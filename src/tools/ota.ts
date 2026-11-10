@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -18,6 +18,8 @@ const READ: Need = { minRole: 'user' };
 const OTA: Need = { perm: 'ota', minRole: 'admin' };
 const UPLOAD_TIMEOUT_MS = 120_000;
 const SUMS = 'SHA256SUMS';
+/** As the Mac app (FirmwareUpdate.swift): a release without checksums is never flashed. */
+const NO_SUMS = 'the release has no SHA256SUMS — not flashing unverified firmware';
 
 interface OtaInfo { version?: string; form?: string; target?: string }
 
@@ -83,7 +85,7 @@ export function registerOtaTools(server: McpServer, ctx: ToolContext): void {
       'Install the newest PlaiiinLight firmware release from GitHub on lamps that run an older version (see firmware_check). ' +
       'Always two-step: the first call returns {needsConfirmation, summary, confirm} listing each lamp `current → new`; ' +
       'show the summary to the user and repeat with `confirm` only after they agree. Lamps are updated one at a time: ' +
-      'the image is downloaded once (≤ 8 MB, checked against the release\'s SHA256SUMS when it has one), uploaded, and the ' +
+      'the image is downloaded once (≤ 8 MB) and checked against the release\'s SHA256SUMS (a release without one is refused), uploaded, and the ' +
       'lamp reboots (unavailable for up to a minute); the tool waits until it reports the new version (≤ 90 s). The first ' +
       'failure stops the run: later lamps are reported `skipped`. Needs the `ota` permission on AI keys, admin otherwise. ' +
       'Returns one result per lamp: `{lamp, ok: true, from, to, verified}` or `{lamp, ok: false, skipped?, reason}`.',
@@ -106,17 +108,18 @@ export function registerOtaTools(server: McpServer, ctx: ToolContext): void {
     const rel = r.rel;
     const plans = await fanout(ctx, allowed.map((l) => l.deviceId), READ, async (c) => ({ plan: await planFor(c, rel) }));
     const updates: Array<{ lamp: FleetLamp; current: string; asset: string; url: string }> = [];
+    const hasSums = !!rel.assets[SUMS];
     for (const p of plans) {
       if (!p.ok) { out.set(p.deviceId, p); continue; }
       const base = { lamp: p.lamp, deviceId: p.deviceId };
       const plan = p.plan;
       if (plan.kind === 'current') out.set(p.deviceId, { ...base, ok: true, upToDate: true, current: plan.current });
       else if (plan.kind === 'none') out.set(p.deviceId, { ...base, ok: false, reason: plan.reason });
+      else if (!hasSums) out.set(p.deviceId, { ...base, ok: false, reason: NO_SUMS });
       else updates.push({ lamp: allowed.find((l) => l.deviceId === p.deviceId)!, current: plan.current, asset: plan.asset, url: plan.url });
     }
     if (!updates.length) return result({ version: rel.version, ...ordered() });
 
-    const hasSums = !!rel.assets[SUMS];
     const others = targets.filter((l) => !updates.some((u) => u.lamp.deviceId === l.deviceId)).map((l) => {
       const o = out.get(l.deviceId)!;
       return `- ${l.name}: not updated (${o.ok ? 'already up to date' : o.reason})`;
@@ -125,32 +128,31 @@ export function registerOtaTools(server: McpServer, ctx: ToolContext): void {
       `Update the firmware to ${rel.version}, one lamp at a time (each lamp reboots and is unavailable for up to a minute):`,
       ...updates.map((u) => `- ${u.lamp.name}: ${u.current} → ${rel.version} (${u.asset})`),
       ...others,
-      hasSums ? 'Each image is checked against the release\'s SHA256SUMS before upload.'
-        : 'The release has no SHA256SUMS: images are checked by size only.',
+      'Each image is checked against the release\'s SHA256SUMS before upload.',
     ].join('\n');
-    const content = { version: rel.version, sums: hasSums ? rel.assets[SUMS] : null, plan: updates.map((u) => ({ deviceId: u.lamp.deviceId, from: u.current, asset: u.asset, url: u.url })) };
+    const content = { version: rel.version, sums: rel.assets[SUMS], plan: updates.map((u) => ({ deviceId: u.lamp.deviceId, from: u.current, asset: u.asset, url: u.url })) };
     const ask = confirmContent(ctx, 'firmware_update', args, args.confirm, content, updates.map((u) => u.lamp.deviceId), summary);
     if (ask) return result(ask);
 
     const dir = mkdtempSync(join(tmpdir(), 'plaiiin-ota-'));
-    const files = new Map<string, string>();
+    const images = new Map<string, Buffer>();
     let sums: Record<string, string> | undefined;
-    /** Each asset is downloaded once per call into the temp dir (and its hash checked) before any upload of it. */
+    /**
+     * Each asset is downloaded once per call (≤ 8 MB), its hash checked, and kept in memory: the exact
+     * verified bytes are what gets uploaded. A copy goes to the temp dir (removed at the end).
+     */
     const image = async (name: string, url: string): Promise<Buffer> => {
-      let path = files.get(name);
-      if (!path) {
-        const data = await downloadAsset(fetchImpl(), name, url);
-        if (hasSums) {
-          sums ??= parseSha256Sums((await downloadAsset(fetchImpl(), SUMS, rel.assets[SUMS]!, MAX_SUMS_BYTES)).toString('utf8'));
-          const want = sums[name];
-          if (!want) throw new Error(`${SUMS} has no entry for ${name} — not flashing it`);
-          if (createHash('sha256').update(data).digest('hex') !== want) throw new Error(`${name} doesn't match its SHA-256 in ${SUMS} — not flashing it`);
-        }
-        path = join(dir, name);
-        writeFileSync(path, data);
-        files.set(name, path);
+      let data = images.get(name);
+      if (!data) {
+        data = await downloadAsset(fetchImpl(), name, url);
+        sums ??= parseSha256Sums((await downloadAsset(fetchImpl(), SUMS, rel.assets[SUMS]!, MAX_SUMS_BYTES)).toString('utf8'));
+        const want = sums[name];
+        if (!want) throw new Error(`${SUMS} has no entry for ${name} — not flashing it`);
+        if (createHash('sha256').update(data).digest('hex') !== want) throw new Error(`${name} doesn't match its SHA-256 in ${SUMS} — not flashing it`);
+        writeFileSync(join(dir, name), data);
+        images.set(name, data);
       }
-      return readFileSync(path);
+      return data;
     };
     const pollMs = ctx.otaPollMs ?? 2000;
     const rebootMs = ctx.otaRebootTimeoutMs ?? 90_000;
@@ -189,7 +191,7 @@ export function registerOtaTools(server: McpServer, ctx: ToolContext): void {
           ctx.registry.update({ ...cur, firmware: rel.version, lastSeen: new Date().toISOString() });
           out.set(l.deviceId, {
             ...base, ok: true, from: u.current, to: rel.version, asset: u.asset,
-            verified: hasSums ? 'sha256' : 'size only (the release has no SHA256SUMS)',
+            verified: 'sha256',
           });
         } catch (e) {
           failed = l.name;

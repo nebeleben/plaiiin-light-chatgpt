@@ -194,16 +194,18 @@ describe('firmware_update', () => {
     expect(a.state.otaReceived).toBeNull();
   });
 
-  it('without SHA256SUMS the update goes ahead and says it was size-checked only', async () => {
+  it('a release without SHA256SUMS is refused before any download or confirmation', async () => {
     const r0 = release('v2.8.0', { 'display-app.bin': BIN }, false);
     const g = github([r0.rel], r0.assets);
     const t = (h = await makeHarness({ fetchImpl: g.fetchImpl }));
     const a = await t.addFake({ deviceId: 'aaaaaaaaaaaa', name: 'Alpha', firmware: '2.7.0' });
     a.state.otaNextVersion = '2.8.0';
-    const ask = await t.call('firmware_update', { lamps: 'Alpha' });
-    expect(ask.summary).toMatch(/no SHA256SUMS/);
-    const r = await t.call('firmware_update', { lamps: 'Alpha', confirm: ask.confirm });
-    expect(r.results[0]).toMatchObject({ ok: true, verified: 'size only (the release has no SHA256SUMS)' });
+    const r = await t.call('firmware_update', { lamps: 'Alpha' });
+    expect(r.needsConfirmation).toBeUndefined();
+    expect(r.results[0]).toMatchObject({ lamp: 'Alpha', ok: false, reason: 'the release has no SHA256SUMS — not flashing unverified firmware' });
+    expect(JSON.stringify(r)).not.toMatch(/size only/);
+    expect(g.downloads()).toEqual([]);
+    expect(a.state.otaReceived).toBeNull();
   });
 
   it('a download shorter than its Content-Length fails', async () => {

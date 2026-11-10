@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
+import WebSocket from 'ws';
 import { GifWriter } from 'omggif';
 import { PNG } from 'pngjs';
-import { encodeColorFrame, frameSource } from '../src/stream/sources';
+import { countGifFrames, encodeColorFrame, frameSource } from '../src/stream/sources';
 import { makeHarness, type Harness } from './harness';
 
 let h: Harness | undefined;
@@ -79,7 +80,15 @@ describe('frameSource', () => {
   it('a GIF with more than 1000 frames is refused before decoding', () => {
     const p = join(tmp, 'long.gif');
     gif(p, 4, 4, [[1, 2, 3]], 1001);
-    expect(() => frameSource({ gifPath: p }, 2, 2, 10)).toThrow(/1001 frames.*1000/);
+    expect(() => frameSource({ gifPath: p }, 2, 2, 10)).toThrow(/more than 1000 frames/);
+  });
+
+  it('image descriptors are counted by walking the blocks, stopping past the limit', () => {
+    const p2 = join(tmp, 'count2.gif'), pl = join(tmp, 'count-long.gif');
+    gif(p2, 4, 4, [[1, 2, 3], [4, 5, 6]]);
+    gif(pl, 4, 4, [[1, 2, 3]], 1500);
+    expect(countGifFrames(readFileSync(p2), 1000)).toBe(2);
+    expect(countGifFrames(readFileSync(pl), 1000)).toBe(1001);
   });
 
   it('PNG files play in order and loop', async () => {
@@ -125,6 +134,53 @@ describe('stream tools', () => {
     expect(stop.stopped).toEqual([r1.streamId]);
     await until(() => a.state.wsFrames.some((f) => f[0] === 0x03));
   });
+
+  it('stream_stop returns promptly when the lamp never takes the clear frame', async () => {
+    const t = (h = await makeHarness());
+    await t.addFake({ deviceId: 'aaaaaaaaaaaa', name: 'Alpha', grid: { w: 1, h: 1 } });
+    const r = await t.call('stream_start', { lamps: 'Alpha', source: { script }, fps: 5, seconds: 30 });
+    const real = WebSocket.prototype.send;
+    // A stalled lamp: the clear frame's send callback never fires.
+    const spy = vi.spyOn(WebSocket.prototype, 'send').mockImplementation(function (this: WebSocket, data: any, ...rest: any[]) {
+      if (Buffer.isBuffer(data) && data.length === 1 && data[0] === 0x03) return;
+      return (real as any).call(this, data, ...rest);
+    });
+    try {
+      const t0 = Date.now();
+      const stop = await t.call('stream_stop', { streamId: r.streamId });
+      expect(stop.stopped).toEqual([r.streamId]);
+      expect(Date.now() - t0).toBeLessThan(2000);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('two concurrent starts to one lamp leave exactly one connection streaming', async () => {
+    const t = (h = await makeHarness());
+    await t.addFake({ deviceId: 'aaaaaaaaaaaa', name: 'Alpha', grid: { w: 1, h: 1 } });
+    const args = { lamps: 'Alpha', source: { script }, fps: 5, seconds: 30 };
+    const [a, b] = await Promise.all([t.call('stream_start', args), t.call('stream_start', args)]);
+    expect([a.results[0].ok, b.results[0].ok]).toEqual([true, true]);
+    const streaming = (await t.call('streams_list')).streams.flatMap((s: any) => s.lamps).filter((l: any) => l.state === 'streaming');
+    expect(streaming).toHaveLength(1);
+    expect([a.results[0].replaced, b.results[0].replaced].filter(Boolean)).toHaveLength(1);
+    await t.call('stream_stop', {});
+  });
+
+  it('a stop during a slow render returns without waiting for it', async () => {
+    const t = (h = await makeHarness());
+    const lamp = await t.addFake({ deviceId: 'aaaaaaaaaaaa', name: 'Alpha', grid: { w: 1, h: 1 } });
+    // Batch 0 (frames 0–9 at 5 fps) is quick; every frame of batch 1 burns 280 ms, so frame 10 is
+    // still rendering well after it is due at 2 s.
+    const slow = 'function shade(x, y, idx, frame) { if (frame >= 10) { var e = Date.now() + 280; while (Date.now() < e) {} } emit(1, 2, 3); }';
+    const r = await t.call('stream_start', { lamps: 'Alpha', source: { script: slow }, fps: 5, seconds: 30 });
+    expect(r.results[0].ok).toBe(true);
+    await until(() => lamp.state.wsFrames.filter((f) => f[0] === 0x01).length >= 10, 4000);
+    await new Promise((res) => setTimeout(res, 300));
+    const t0 = Date.now();
+    await t.call('stream_stop', { streamId: r.streamId });
+    expect(Date.now() - t0).toBeLessThan(300);
+  }, 10000);
 
   it('an AI key without `stream` is refused before connecting', async () => {
     const t = (h = await makeHarness());

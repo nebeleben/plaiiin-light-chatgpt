@@ -75,6 +75,40 @@ function pngFrames(paths: string[], w: number, h: number): FrameSource {
 
 interface OpenGif { reader: GifReader; w: number; h: number }
 
+/**
+ * Count image descriptors (0x2c) by walking the GIF's blocks, stopping past `limit` — before omggif,
+ * which keeps an object per descriptor, parses the file. Malformed structure is left for omggif to report.
+ */
+export function countGifFrames(buf: Buffer, limit: number): number {
+  let p = 13;
+  if (buf[10]! & 0x80) p += 3 * (1 << ((buf[10]! & 7) + 1));
+  const skipSubBlocks = () => {
+    while (p < buf.length) {
+      const n = buf[p++]!;
+      if (n === 0) return;
+      p += n;
+    }
+  };
+  let frames = 0;
+  while (p < buf.length) {
+    const b = buf[p++];
+    if (b === 0x21) {
+      p++; // extension label
+      skipSubBlocks();
+    } else if (b === 0x2c) {
+      if (++frames > limit) return frames;
+      const flags = buf[p + 8] ?? 0;
+      p += 9;
+      if (flags & 0x80) p += 3 * (1 << ((flags & 7) + 1));
+      p++; // LZW minimum code size
+      skipSubBlocks();
+    } else {
+      break; // 0x3b trailer, or something omggif will reject
+    }
+  }
+  return frames;
+}
+
 function openGif(path: string): OpenGif {
   const st = statSync(path);
   if (!st.isFile()) throw new Error('gifPath is not a file');
@@ -85,6 +119,8 @@ function openGif(path: string): OpenGif {
   const w = buf.readUInt16LE(6), h = buf.readUInt16LE(8);
   if (w > MAX_PNG_SIDE || h > MAX_PNG_SIDE) throw new Error(`GIF is ${w}×${h} px; at most ${MAX_PNG_SIDE}×${MAX_PNG_SIDE}`);
   if (w === 0 || h === 0) throw new Error('GIF has an empty logical screen');
+  const counted = countGifFrames(buf, MAX_GIF_FRAMES);
+  if (counted > MAX_GIF_FRAMES) throw new Error(`GIF has more than ${MAX_GIF_FRAMES} frames; at most ${MAX_GIF_FRAMES}`);
   let reader: GifReader;
   try {
     reader = new GifReader(buf); // parses block headers only; no frame is decoded here

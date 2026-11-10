@@ -17,6 +17,8 @@ const CONNECT_TIMEOUT_MS = 5000;
 /** Frames waiting in a socket's send buffer before further frames are dropped (slow Wi-Fi). */
 const MAX_QUEUED_FRAMES = 3;
 const RECENT = 5;
+/** A lamp that doesn't take the closing clear frame within this is cut off (a stop must never hang). */
+const CLEAR_TIMEOUT_MS = 1500;
 
 type ConnState = 'streaming' | 'ended' | 'stopped' | 'replaced' | 'closed by the lamp' | 'failed';
 
@@ -74,6 +76,25 @@ function openSocket(host: string, port: number, token: string | undefined): Prom
 export class StreamManager {
   private readonly active = new Map<string, Stream>();
   private readonly recent: unknown[] = [];
+  private readonly locks = new Map<string, Promise<void>>();
+
+  /**
+   * Hold the start lock of every lamp in `ids` (taken in sorted order, so two starts can't deadlock)
+   * until the returned release is called: two concurrent stream_starts to one lamp can't both open sockets.
+   */
+  async lock(ids: string[]): Promise<() => void> {
+    const releases: Array<() => void> = [];
+    for (const id of [...new Set(ids)].sort()) {
+      const prev = this.locks.get(id) ?? Promise.resolve();
+      let release!: () => void;
+      const mine = new Promise<void>((r) => { release = r; });
+      const chained = prev.then(() => mine);
+      this.locks.set(id, chained);
+      await prev;
+      releases.push(() => { release(); if (this.locks.get(id) === chained) this.locks.delete(id); });
+    }
+    return () => { for (const r of releases) r(); };
+  }
 
   list() {
     return { streams: [...this.active.values()].map((s) => this.describe(s)), recent: [...this.recent] };
@@ -142,13 +163,16 @@ export class StreamManager {
         if (due >= s.endsAt) break;
         await sleep(due - Date.now(), signal);
         if (signal.aborted) break;
-        let frame: Uint8Array;
+        let frame: Uint8Array | undefined;
         try {
-          frame = await c.src(i);
+          // A stop during a batch render returns at once; the render finishes in the background.
+          frame = await Promise.race([c.src(i), new Promise<undefined>((r) => {
+            if (signal.aborted) r(undefined); else signal.addEventListener('abort', () => r(undefined), { once: true });
+          })]);
         } catch (e) {
           c.state = 'failed'; c.reason = errorText(e); break;
         }
-        if (signal.aborted || c.ws.readyState !== WebSocket.OPEN) break;
+        if (!frame || signal.aborted || c.ws.readyState !== WebSocket.OPEN) break;
         if (c.ws.bufferedAmount > MAX_QUEUED_FRAMES * frameBytes) { c.dropped++; continue; }
         c.ws.send(encodeColorFrame(frame));
         c.sent++;
@@ -156,8 +180,13 @@ export class StreamManager {
     } finally {
       if (c.state === 'streaming') c.state = 'ended';
       if (c.ws.readyState === WebSocket.OPEN) {
-        await new Promise<void>((r) => c.ws.send(CLEAR_FRAME, () => r()));
-        c.ws.close(1000);
+        let timer: NodeJS.Timeout | undefined;
+        const sent = await Promise.race([
+          new Promise<boolean>((r) => c.ws.send(CLEAR_FRAME, (e) => r(!e))),
+          new Promise<boolean>((r) => { timer = setTimeout(() => r(false), CLEAR_TIMEOUT_MS); }),
+        ]);
+        clearTimeout(timer);
+        if (sent) c.ws.close(1000); else c.ws.terminate();
       }
     }
   }
@@ -207,29 +236,34 @@ export function registerStreamTools(server: McpServer, ctx: ToolContext): Stream
       return f;
     };
     const conns: Conn[] = [];
-    const results = await Promise.all(targets.map(async (l) => {
-      const base = { lamp: l.name, deviceId: l.deviceId };
-      const refused = refusal(l, STREAM);
-      if (refused) return { ...base, ok: false as const, skipped: true as const, reason: refused };
-      try {
-        const grid = await ctx.registry.call(l.deviceId, (c, fl) => gridOf(c, fl));
-        const frames = sourceFor(grid.w, grid.h);
-        await frames(0); // a broken script fails here, before the lamp is touched
-        const replaced = await streams.release(l.deviceId);
-        const ep = await ctx.registry.endpoint(l.deviceId);
-        const ws = await openSocket(ep.host, ep.port, ep.token);
-        ws.on('error', () => { /* reported through 'close' */ });
-        conns.push({ lamp: l.name, deviceId: l.deviceId, grid, ws, src: frames, abort: new AbortController(), sent: 0, dropped: 0, state: 'streaming' });
-        return { ...base, ok: true as const, grid, ...(replaced ? { replaced } : {}) };
-      } catch (e) {
-        return { ...base, ok: false as const, reason: explain(e, l, STREAM) };
-      }
-    }));
-    if (!conns.length) return result({ results }, true);
-    // Keep target order for the connections (Promise.all above finishes in any order).
-    conns.sort((a, b) => targets.findIndex((t) => t.deviceId === a.deviceId) - targets.findIndex((t) => t.deviceId === b.deviceId));
-    const s = streams.start(conns, args.fps, args.seconds, describeSource(src));
-    return result({ streamId: s.id, fps: s.fps, seconds: s.seconds, endsAt: new Date(s.endsAt).toISOString(), results });
+    const unlock = await streams.lock(targets.filter((l) => !refusal(l, STREAM)).map((l) => l.deviceId));
+    try {
+      const results = await Promise.all(targets.map(async (l) => {
+        const base = { lamp: l.name, deviceId: l.deviceId };
+        const refused = refusal(l, STREAM);
+        if (refused) return { ...base, ok: false as const, skipped: true as const, reason: refused };
+        try {
+          const grid = await ctx.registry.call(l.deviceId, (c, fl) => gridOf(c, fl));
+          const frames = sourceFor(grid.w, grid.h);
+          await frames(0); // a broken script fails here, before the lamp is touched
+          const replaced = await streams.release(l.deviceId);
+          const ep = await ctx.registry.endpoint(l.deviceId);
+          const ws = await openSocket(ep.host, ep.port, ep.token);
+          ws.on('error', () => { /* reported through 'close' */ });
+          conns.push({ lamp: l.name, deviceId: l.deviceId, grid, ws, src: frames, abort: new AbortController(), sent: 0, dropped: 0, state: 'streaming' });
+          return { ...base, ok: true as const, grid, ...(replaced ? { replaced } : {}) };
+        } catch (e) {
+          return { ...base, ok: false as const, reason: explain(e, l, STREAM) };
+        }
+      }));
+      if (!conns.length) return result({ results }, true);
+      // Keep target order for the connections (Promise.all above finishes in any order).
+      conns.sort((a, b) => targets.findIndex((t) => t.deviceId === a.deviceId) - targets.findIndex((t) => t.deviceId === b.deviceId));
+      const s = streams.start(conns, args.fps, args.seconds, describeSource(src));
+      return result({ streamId: s.id, fps: s.fps, seconds: s.seconds, endsAt: new Date(s.endsAt).toISOString(), results });
+    } finally {
+      unlock();
+    }
   }));
 
   server.registerTool('stream_stop', {
