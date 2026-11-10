@@ -32,6 +32,8 @@ export interface FakeLampState {
   params: Map<string, Record<string, unknown>>;
   formPrompt: string | null;
   frame: Buffer | null;
+  /** Every frame POSTed to /api/frame, in order (copyImage: [new, previous]). */
+  frames: Buffer[];
   images: Map<string, { w: number; h: number; label?: string; data: Buffer }>;
   scenes: Map<string, FakeScene>;
   swarm: { member: boolean; id: string; enabled: boolean; channel: number } | null; // null => 404
@@ -171,7 +173,7 @@ const ROUTES: Route[] = [
   { method: 'POST', re: /^\/api\/frame$/, min: 'creator', aiPerm: 'images', handle: (c) => {
     const n = c.s.w * c.s.h * 3;
     if (c.body.length !== n) return send(c.res, 400, { status: 'error', message: `expected ${n} bytes (${c.s.w}x${c.s.h}x3)` });
-    c.s.frame = Buffer.from(c.body); ok(c.res, { w: c.s.w, h: c.s.h });
+    c.s.frame = Buffer.from(c.body); c.s.frames.push(Buffer.from(c.body)); ok(c.res, { w: c.s.w, h: c.s.h });
   } },
   { method: 'GET', re: /^\/api\/frame$/, min: 'user', handle: ({ s, res }) => {
     if (!s.frame) return send(res, 404, { status: 'error', message: 'no frame stored' });
@@ -205,7 +207,9 @@ const ROUTES: Route[] = [
   { method: 'POST', re: /^\/api\/images\/([\w-]+)\/label$/, min: 'creator', aiPerm: 'images', handle: (c) => {
     const i = c.s.images.get(c.m[1]!);
     if (!i) return send(c.res, 404, { status: 'error', message: 'no such image' });
-    i.label = json(c).label || undefined; ok(c.res);
+    const label = json(c).label;
+    if (label !== undefined && label !== null && (typeof label !== 'string' || Buffer.byteLength(label) > 32 || /[\x00-\x1f\x7f]/.test(label))) return send(c.res, 400, { status: 'error', message: 'bad label' });
+    i.label = label || undefined; ok(c.res);
   } },
   { method: 'DELETE', re: /^\/api\/images\/([\w-]+)$/, min: 'creator', aiPerm: 'images', handle: (c) => {
     if (!c.s.images.delete(c.m[1]!)) return send(c.res, 404, { status: 'error', message: 'no such image' });
@@ -321,7 +325,7 @@ export function startFakeLamp(opts: FakeLampOpts): Promise<FakeLamp> {
     maxBrightness: opts.maxBrightness ?? null, onlyWhenOn: opts.onlyWhenOn ?? false,
     on: false, color: [255, 255, 255], mode: 'api', brightness: 128, current: null, scene: null, fps: 30,
     effects: new Map([['rainbow', ''], ['carousel', '']]), hardcoded: new Set(['rainbow', 'carousel']),
-    params: new Map(), formPrompt: null, frame: null, images: new Map(), scenes: new Map(),
+    params: new Map(), formPrompt: null, frame: null, frames: [], images: new Map(), scenes: new Map(),
     swarm: opts.swarmId ? { member: true, id: opts.swarmId, enabled: true, channel: 1 } : { member: false, id: '', enabled: false, channel: 1 },
     whoamiPerms: true, otaReceived: null, wsFrames: [], wsConnections: 0, wsRefused: 0,
     requests: [], inFlight: 0, maxConcurrency: 0, delayMs: 0, echoAuthOn500: false, lastAuthorization: undefined,

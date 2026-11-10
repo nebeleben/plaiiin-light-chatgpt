@@ -56,3 +56,21 @@ export class Confirmations {
 
 export const CONFIRM_REFUSED =
   'confirmation token is invalid, expired (120 s) or was issued for different arguments — call again without confirm to get a new one, and show its summary to the user';
+
+/** sha256 of a value's JSON (content bound into a confirmation). */
+export const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v ?? null)).digest('hex');
+
+/**
+ * Two-step confirmation whose token also covers what will actually be written: a hash of the content
+ * and the sorted list of what gets replaced. If either changed since the token was issued, the call
+ * is refused and a fresh confirmation request (with the new summary) comes back instead. Undefined = go ahead.
+ */
+export function confirmContent(
+  ctx: { confirm: Confirmations }, tool: string, args: object, confirm: string | undefined,
+  content: unknown, replacing: string[], summary: string,
+): ConfirmationRequest | (ConfirmationRequest & { refused: string }) | undefined {
+  const bound = { ...args, __content: digest(content), __replacing: [...replacing].sort() };
+  if (confirm !== undefined && ctx.confirm.consume(tool, bound, confirm)) return undefined;
+  const fresh = ctx.confirm.request(tool, bound, summary);
+  return confirm === undefined ? fresh : { ...fresh, refused: CONFIRM_REFUSED };
+}

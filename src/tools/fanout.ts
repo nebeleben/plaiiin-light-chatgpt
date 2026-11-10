@@ -1,7 +1,8 @@
 import { refusal, type Need } from '../lamp/access';
 import type { LampClient } from '../lamp/client';
 import type { FleetLamp } from '../store/fleet';
-import { explain, type ToolContext } from './context';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { explain, result, type ToolContext } from './context';
 import { refreshSwarms, swarmGroups } from './swarm';
 
 export type LampOk<T> = { lamp: string; deviceId: string; ok: true; viaSwarm?: string } & T;
@@ -67,4 +68,10 @@ export async function swarmFanout<T extends object>(
     }
   }));
   return targets.map((l) => out.get(l.deviceId)!);
+}
+
+/** One lamp → `{lamp, deviceId, ok, …}` as the whole result (isError when not ok). */
+export async function single<T extends object>(ctx: ToolContext, lamp: string, need: Need, fn: (c: LampClient, l: FleetLamp) => Promise<T>): Promise<CallToolResult> {
+  const [r] = await fanout(ctx, [lamp], need, fn);
+  return result(r, !r!.ok);
 }

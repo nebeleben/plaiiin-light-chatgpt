@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -11,11 +10,11 @@ import { MAX_FRAMES, previewScript, type Rgb } from '../preview/shade';
 import type { FleetLamp } from '../store/fleet';
 import { Library } from '../store/library';
 import { scrub } from '../util/scrub';
-import { CONFIRM_REFUSED, type ConfirmationRequest } from './confirm';
+import { CONFIRM_REFUSED, confirmContent, digest } from './confirm';
 import {
   errorText, explain, failure, guard, lampArg, lampsArg, normLamps, result, type ToolContext,
 } from './context';
-import { fanout, swarmFanout, type LampResult } from './fanout';
+import { fanout, single, swarmFanout, type LampResult } from './fanout';
 
 const READ: Need = { minRole: 'user' };
 /** Upload / delete / validate / compile scripts. */
@@ -47,50 +46,27 @@ const CONTRACT =
   '`// @description …` and `// @tags a,b` (shown in effect lists). No other globals, no closures over host objects.';
 
 interface EffectItem { name: string; description?: string; tags?: string[]; source?: 'hardcoded' | 'script' }
-interface Listing { scripts?: string[]; playing?: string | null; effects?: EffectItem[] }
+export interface Listing { scripts?: string[]; playing?: string | null; effects?: EffectItem[] }
 interface ParamItem { name: string; min: number; max: number; default: number; value: number; description?: string }
 interface ParamSchema { items?: ParamItem[]; mode?: string; modeSwitch?: boolean }
 
 const enc = (n: string) => encodeURIComponent(n);
-const listing = (c: LampClient) => c.get<Listing>('/api/js');
+export const listing = (c: LampClient) => c.get<Listing>('/api/js');
 const builtIn = (l: Listing, name: string) => l.effects?.find((e) => e.name === name)?.source === 'hardcoded';
-const present = (l: Listing, name: string) => (l.effects?.some((e) => e.name === name) ?? false) || (l.scripts?.includes(name) ?? false);
+export const present = (l: Listing, name: string) => (l.effects?.some((e) => e.name === name) ?? false) || (l.scripts?.includes(name) ?? false);
 const values = (s: ParamSchema): Record<string, number> => Object.fromEntries((s.items ?? []).map((i) => [i.name, i.value]));
 const BUILTIN_NO_SOURCE = (name: string) => `${name} is a built-in effect (compiled into the firmware, no source)`;
 
-function putSource(c: LampClient, name: string, src: string) {
+export function putSource(c: LampClient, name: string, src: string) {
   return c.sendRaw('PUT', `/api/js/${enc(name)}`, src, 'text/javascript');
 }
-function putTunes(c: LampClient, name: string, v: Record<string, number>) {
+export function putTunes(c: LampClient, name: string, v: Record<string, number>) {
   return c.send<ParamSchema>('PUT', `/api/js/${enc(name)}/params`, v);
 }
 /** The source lamp's tune values (nil when it has none or can't say), as SwarmSync's `tunes`. */
 async function readTunes(c: LampClient, name: string): Promise<Record<string, number> | undefined> {
   const s = await c.get<ParamSchema>(`/api/js/${enc(name)}/params`).catch(() => undefined);
   return s?.items?.length ? values(s) : undefined;
-}
-
-/** One lamp → `{lamp, deviceId, ok, …}` as the whole result (isError when not ok). */
-async function single<T extends object>(ctx: ToolContext, lamp: string, need: Need, fn: (c: LampClient, l: FleetLamp) => Promise<T>): Promise<CallToolResult> {
-  const [r] = await fanout(ctx, [lamp], need, fn);
-  return result(r, !r!.ok);
-}
-
-const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v ?? null)).digest('hex');
-
-/**
- * Two-step confirmation whose token also covers what will actually be written: a hash of the content
- * and the sorted list of what gets replaced. If either changed since the token was issued, the call
- * is refused and a fresh confirmation request (with the new summary) comes back instead.
- */
-function confirmContent(
-  ctx: ToolContext, tool: string, args: object, confirm: string | undefined,
-  content: unknown, replacing: string[], summary: string,
-): ConfirmationRequest | (ConfirmationRequest & { refused: string }) | undefined {
-  const bound = { ...args, __content: digest(content), __replacing: [...replacing].sort() };
-  if (confirm !== undefined && ctx.confirm.consume(tool, bound, confirm)) return undefined;
-  const fresh = ctx.confirm.request(tool, bound, summary);
-  return confirm === undefined ? fresh : { ...fresh, refused: CONFIRM_REFUSED };
 }
 
 type WriteState = 'new' | 'replace' | 'same';

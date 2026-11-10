@@ -15,9 +15,10 @@ describe('tool list', () => {
     expect(names).toEqual([
       'effect_compile', 'effect_copy', 'effect_delete', 'effect_preview', 'effect_read', 'effect_tunes_get',
       'effect_tunes_set', 'effect_upload', 'effect_validate', 'effects_list',
+      'image_copy', 'image_delete', 'image_draw', 'image_get', 'image_label', 'image_show', 'images_list',
       'lamp_add_shared', 'lamp_brightness', 'lamp_color', 'lamp_forget', 'lamp_form_prompt', 'lamp_info', 'lamp_mode', 'lamp_play',
       'lamp_power', 'lamp_rename', 'lamp_state', 'lamps_discover', 'lamps_list',
-      'library_list', 'library_push_effect', 'library_save_effect', 'swarms_list',
+      'library_list', 'library_push_effect', 'library_push_image', 'library_save_effect', 'library_save_image', 'swarms_list',
     ]);
     for (const tool of tools) {
       expect(typeof tool.annotations?.readOnlyHint, tool.name).toBe('boolean');
