@@ -5,7 +5,7 @@
 // The parent SIGKILLs this process at its wall-clock deadline and only parses what it prints.
 //
 // stdin:  {"runtime": "<shade-runtime.js text>", "timeoutMs": n,
-//          "req": {"op": "inspect"|"render", "source", "w", "h", "frames", "fps", "params", "base"?}}
+//          "req": {"op": "inspect"|"render", "source", "w", "h", "frames", "fps", "start"?, "params", "base"?}}
 // stdout: {"ok": {"info": {...}, "frames": ["<base64 w*h*3>", ...]}} | {"error": "<message>"}
 import vm from 'node:vm';
 
@@ -19,7 +19,8 @@ var __call = function (j) {
     if (a.op === 'inspect') return { info: info };
     var r = PLShade.makeRunner(a.source);
     var out = [];
-    for (var f = 0; f < a.frames; f++) {
+    var start = a.start > 0 ? Math.floor(a.start) : 0;
+    for (var f = start; f < start + a.frames; f++) {
       out.push(r.render({ w: a.w, h: a.h, frame: f, time: f * 1000 / a.fps, base: a.base, params: a.params }));
     }
     return { info: info, frames: out };

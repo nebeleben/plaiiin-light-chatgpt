@@ -16,6 +16,14 @@ export interface ToolContext {
   discover?: () => Promise<Discovered[]>;
   /** Clipboard text (`pbpaste` on macOS); injected in tests. */
   readClipboard?: () => Promise<string>;
+  /** GitHub release list + asset downloads (firmware tools); injected in tests. Default: global fetch. */
+  fetchImpl?: typeof fetch;
+  /** Interval between `GET /api` polls while a lamp reboots after an OTA upload (default 2000 ms). */
+  otaPollMs?: number;
+  /** How long a lamp may take to come back on the new firmware (default 90 000 ms). */
+  otaRebootTimeoutMs?: number;
+  /** How long the firmware release list is cached (default 10 min). */
+  releaseCacheMs?: number;
 }
 
 /** `lamps` argument of fan-out tools: names or deviceIds, a single one, or "all". */

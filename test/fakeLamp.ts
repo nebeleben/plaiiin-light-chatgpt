@@ -39,6 +39,8 @@ export interface FakeLampState {
   swarm: { member: boolean; id: string; enabled: boolean; channel: number } | null; // null => 404
   whoamiPerms: boolean;                       // false: emulate old firmware (no perms in whoami)
   otaReceived: Buffer | null;
+  /** When set, a received OTA image "reboots" the fake into this firmware version. */
+  otaNextVersion: string | null;
   wsFrames: Buffer[];
   wsConnections: number; wsRefused: number;
   // test hooks / instrumentation
@@ -260,7 +262,11 @@ const ROUTES: Route[] = [
     tx: 0, rx: 0, txFail: 0, lastFrom: '00:00:00:00:00:00', dropAuth: 0, dropReplay: 0, relayed: 0, applied: 0, stackFree: 0 }) },
   { method: 'GET', re: /^\/api\/ota\/info$/, min: 'user', handle: ({ s, res }) => send(res, 200, {
     version: s.firmware, date: 'Jan  1 2026', time: '00:00:00', partition: 'ota_0', idf: 'v5.3.2', form: s.form, target: s.target }) },
-  { method: 'POST', re: /^\/api\/ota$/, min: 'admin', aiPerm: 'ota', handle: (c) => { c.s.otaReceived = Buffer.from(c.body); ok(c.res); } },
+  { method: 'POST', re: /^\/api\/ota$/, min: 'admin', aiPerm: 'ota', handle: (c) => {
+    c.s.otaReceived = Buffer.from(c.body);
+    if (c.s.otaNextVersion) c.s.firmware = c.s.otaNextVersion;
+    ok(c.res);
+  } },
 ];
 
 function modeSet(c: Ctx): void {
@@ -327,7 +333,7 @@ export function startFakeLamp(opts: FakeLampOpts): Promise<FakeLamp> {
     effects: new Map([['rainbow', ''], ['carousel', '']]), hardcoded: new Set(['rainbow', 'carousel']),
     params: new Map(), formPrompt: null, frame: null, frames: [], images: new Map(), scenes: new Map(),
     swarm: opts.swarmId ? { member: true, id: opts.swarmId, enabled: true, channel: 1 } : { member: false, id: '', enabled: false, channel: 1 },
-    whoamiPerms: true, otaReceived: null, wsFrames: [], wsConnections: 0, wsRefused: 0,
+    whoamiPerms: true, otaReceived: null, otaNextVersion: null, wsFrames: [], wsConnections: 0, wsRefused: 0,
     requests: [], inFlight: 0, maxConcurrency: 0, delayMs: 0, echoAuthOn500: false, lastAuthorization: undefined,
   };
 

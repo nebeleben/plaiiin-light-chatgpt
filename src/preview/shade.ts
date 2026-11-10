@@ -8,6 +8,8 @@ export interface Rgb { r: number; g: number; b: number }
 export interface RenderOpts {
   w: number; h: number; frames: number; fps: number;
   params?: Record<string, number>; base?: Rgb;
+  /** First frame number (default 0): frames start..start+frames-1 are rendered (time = frame·1000/fps). */
+  start?: number;
   /** Budget for running the script (default 3000 ms); the worker is killed shortly after. */
   timeoutMs?: number;
 }
@@ -38,7 +40,7 @@ const MAX_OUTPUT = 32 * 1024 * 1024;
 const WORKER = fileURLToPath(new URL('./preview-worker.mjs', import.meta.url));
 const PERMISSION = process.allowedNodeEnvironmentFlags.has('--permission') ? '--permission' : '--experimental-permission';
 
-interface Job { op: 'inspect' | 'render'; source: string; w?: number; h?: number; frames?: number; fps?: number; params?: Record<string, number>; base?: Rgb }
+interface Job { op: 'inspect' | 'render'; source: string; w?: number; h?: number; frames?: number; fps?: number; start?: number; params?: Record<string, number>; base?: Rgb }
 interface WorkerOut { info: ScriptInfo; frames?: string[] }
 
 /**
@@ -96,6 +98,7 @@ function checkGrid(o: RenderOpts): void {
   if (!Number.isInteger(w) || !Number.isInteger(h) || w < 1 || h < 1 || w * h > MAX_PIXELS || w > MAX_WIDTH) throw new Error(`grid must be at least 1×1, at most ${MAX_WIDTH} wide and at most ${MAX_PIXELS} pixels`);
   if (!Number.isInteger(frames) || frames < 1 || frames > MAX_FRAMES) throw new Error(`frames must be 1–${MAX_FRAMES}`);
   if (!(fps > 0)) throw new Error('fps must be > 0');
+  if (o.start !== undefined && (!Number.isInteger(o.start) || o.start < 0)) throw new Error('start must be a whole number ≥ 0');
 }
 
 /** The script's `// @param`, `// @state`, `// @mode` annotations, as the lamp reads them. */
@@ -105,14 +108,14 @@ export async function inspectScript(source: string): Promise<ScriptInfo> {
 
 /**
  * Render a script's first frames with the lamp's own runtime (vendored shade-runtime.js) in a
- * sandboxed worker process, plus its annotations. Frame f runs at time f·1000/fps ms; each frame is
+ * sandboxed worker process, plus its annotations. Frame f (from `start`, default 0) runs at time f·1000/fps ms; each frame is
  * w·h·3 bytes (RGB, row-major). Rejects with the script's error, a timeout or out-of-memory.
  */
 export async function previewScript(source: string, opts: RenderOpts): Promise<{ info: ScriptInfo; frames: Uint8Array[] }> {
   checkGrid(opts);
   const { w, h, frames, fps } = opts;
   const r = await runWorker(
-    { op: 'render', source, w, h, frames, fps, params: opts.params ?? {}, ...(opts.base ? { base: opts.base } : {}) },
+    { op: 'render', source, w, h, frames, fps, ...(opts.start ? { start: opts.start } : {}), params: opts.params ?? {}, ...(opts.base ? { base: opts.base } : {}) },
     opts.timeoutMs ?? 3000,
   );
   const n = w * h * 3;

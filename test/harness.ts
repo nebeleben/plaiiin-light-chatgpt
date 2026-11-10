@@ -32,6 +32,10 @@ export interface HarnessOpts {
   timeoutMs?: number;
   discover?: () => Promise<Discovered[]>;
   readClipboard?: () => Promise<string>;
+  /** GitHub API / asset downloads (firmware tools); tests never reach the network. */
+  fetchImpl?: typeof fetch;
+  /** Interval between `GET /api` polls after an OTA upload. */
+  otaPollMs?: number;
 }
 
 export async function makeHarness(opts: HarnessOpts = {}): Promise<Harness> {
@@ -43,6 +47,8 @@ export async function makeHarness(opts: HarnessOpts = {}): Promise<Harness> {
     registry, confirm: new Confirmations(), stateDir: dir,
     discover: opts.discover ?? (async () => []),
     readClipboard: opts.readClipboard ?? (async () => ''),
+    fetchImpl: opts.fetchImpl ?? (async () => { throw new Error('test: no network'); }),
+    otaPollMs: opts.otaPollMs ?? 10,
   };
   const server = buildServer(ctx);
   const [ct, st] = InMemoryTransport.createLinkedPair();

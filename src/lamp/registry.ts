@@ -96,6 +96,15 @@ export class Registry {
     return { lamp, client: entry.client };
   }
 
+  /**
+   * Where a lamp is and the key it takes, for connections LampClient doesn't make (the `/ws` stream).
+   * The token is a secret: callers must never put it (or a URL carrying it) in a result, error or log.
+   */
+  async endpoint(idOrName: string): Promise<{ lamp: FleetLamp; host: string; port: number; token?: string }> {
+    const lamp = this.lookup(idOrName);
+    return { lamp, host: lamp.host, port: lamp.port, token: await this.secrets.get(lamp.deviceId) };
+  }
+
   /** Run `fn` against a lamp. If it is unreachable, re-resolve it by deviceId once; if it moved, save and retry. */
   async call<T>(idOrName: string, fn: (c: LampClient, l: FleetLamp) => Promise<T>): Promise<T> {
     const { lamp, client } = await this.client(idOrName);
