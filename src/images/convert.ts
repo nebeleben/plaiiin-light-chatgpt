@@ -36,18 +36,26 @@ export function gridToRgb(rows: PixelColor[][], w: number, h: number): Uint8Arra
   return out;
 }
 
-/** Decode a PNG file, refusing it (by file size and header) before decoding when it is too large. */
+/**
+ * Decode a PNG file, refusing it before decoding (file size, then the IHDR header) when it is too large
+ * or interlaced. Non-interlaced PNGs of any bit depth / colour type are accepted.
+ */
 export function readPng(path: string): Rgba {
   const st = statSync(path);
   if (!st.isFile()) throw new Error('pngPath is not a file');
   if (st.size > MAX_PNG_BYTES) throw new Error(`PNG file is ${st.size} bytes; at most ${MAX_PNG_BYTES} (16 MB)`);
-  const head = Buffer.alloc(24);
+  // Signature (8) + IHDR length/type (8) + width, height, depth, colour type, compression, filter, interlace (13).
+  const head = Buffer.alloc(29);
   const fd = openSync(path, 'r');
   let n: number;
-  try { n = readSync(fd, head, 0, 24, 0); } finally { closeSync(fd); }
-  if (n < 24 || !head.subarray(0, 8).equals(SIG) || head.toString('ascii', 12, 16) !== 'IHDR') throw new Error('not a PNG file');
+  try { n = readSync(fd, head, 0, 29, 0); } finally { closeSync(fd); }
+  if (n < 29 || !head.subarray(0, 8).equals(SIG) || head.toString('ascii', 12, 16) !== 'IHDR') throw new Error('not a PNG file');
   const w = head.readUInt32BE(16), h = head.readUInt32BE(20);
   if (w > MAX_PNG_SIDE || h > MAX_PNG_SIDE) throw new Error(`PNG is ${w}×${h} px; at most ${MAX_PNG_SIDE}×${MAX_PNG_SIDE}`);
+  // pngjs bounds inflate to the image size only for non-interlaced images (parser-sync.js inflates
+  // interlaced data without maxLength: a 16 MB file could inflate to gigabytes). Any bit depth is
+  // fine for non-interlaced images: the bound covers it (row size uses the depth).
+  if (head[28] !== 0) throw new Error("interlaced PNGs aren't supported — save it non-interlaced");
   let png: PNG;
   try {
     png = PNG.sync.read(readFileSync(path));

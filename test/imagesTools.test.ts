@@ -24,6 +24,28 @@ describe('image_draw', () => {
     expect(b.state.frame).toBeNull();
   });
 
+  it('drawing the same image twice reuses the saved one', async () => {
+    const t = await harness();
+    const a = await t.addFake({ deviceId: 'aaaaaaaaaaaa', name: 'Alpha', grid: { w: 2, h: 2 } });
+    const r1 = await t.call('image_draw', { lamps: 'Alpha', pixels: grid2, label: 'Quad' });
+    const r2 = await t.call('image_draw', { lamps: 'Alpha', pixels: grid2, label: 'Quad' });
+    expect(r2.results[0]).toMatchObject({ ok: true, saved: true, id: r1.results[0].id, reused: true });
+    expect(a.state.images.size).toBe(1);
+    expect(r2.results[0].note).toMatch(/replaced the lamp's current drawing/);
+  });
+
+  it('a failing show after a successful save still returns the new id', async () => {
+    const t = await harness();
+    const a = await t.addFake({ deviceId: 'aaaaaaaaaaaa', name: 'Alpha', grid: { w: 2, h: 2 } });
+    a.state.override = (_req, res, path) => {
+      if (!path.endsWith('/show')) return false;
+      res.writeHead(500, { 'Content-Type': 'text/plain' }); res.end('boom'); return true;
+    };
+    const r = await t.call('image_draw', { lamps: 'Alpha', pixels: grid2 });
+    expect(r.results[0]).toMatchObject({ ok: true, saved: true, id: 'img-001' });
+    expect(r.results[0].warning).toMatch(/saved as img-001 but not shown: boom/);
+  });
+
   it('save=false draws and enters frame mode without saving', async () => {
     const t = await harness();
     const a = await t.addFake({ deviceId: 'aaaaaaaaaaaa', name: 'Alpha', grid: { w: 2, h: 2 } });

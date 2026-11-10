@@ -62,6 +62,17 @@ describe('toGrid', () => {
     expect(() => toGrid({ pngPath: f }, 2, 2)).toThrow('PNG is 5000×10 px; at most 4096×4096');
   });
 
+  it('refuses an interlaced PNG before decoding', () => {
+    const f = join(tmp(), 'i.png');
+    // signature + IHDR 2×2, 8-bit RGBA, interlace = 1, and no data: refused from the header alone.
+    const head = Buffer.alloc(33);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(head, 0);
+    head.writeUInt32BE(13, 8); head.write('IHDR', 12, 'ascii'); head.writeUInt32BE(2, 16); head.writeUInt32BE(2, 20);
+    head[24] = 8; head[25] = 6; head[28] = 1;
+    writeFileSync(f, head);
+    expect(() => toGrid({ pngPath: f }, 2, 2)).toThrow("interlaced PNGs aren't supported — save it non-interlaced");
+  });
+
   it('refuses a file that is not a PNG', () => {
     const f = join(tmp(), 'x.png');
     writeFileSync(f, 'hello');

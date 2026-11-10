@@ -7,10 +7,10 @@ import { LampHttpError } from '../lamp/errors';
 import { gridToRgb, readPng, resizeToRgb, toPng, type Rgba } from '../images/convert';
 import type { FleetLamp } from '../store/fleet';
 import { Library } from '../store/library';
-import { copyImage, listImages, readImage } from '../sync/copy';
+import { copyImage, findSavedImage, listImages, readImage } from '../sync/copy';
 import { scrub } from '../util/scrub';
 import { CONFIRM_REFUSED, confirmContent, digest } from './confirm';
-import { explain, failure, guard, lampArg, lampsArg, normLamps, result, type ToolContext } from './context';
+import { errorText, explain, failure, guard, lampArg, lampsArg, normLamps, result, type ToolContext } from './context';
 import { fanout, single } from './fanout';
 
 const READ: Need = { minRole: 'user' };
@@ -81,8 +81,10 @@ export function registerImagesTools(server: McpServer, ctx: ToolContext): void {
       'Draw a still image on lamps and show it (frame mode). Give either `pixels` — rows (top to bottom) of colours ' +
       '("#rrggbb" or [r,g,b]), exactly the lamp\'s grid (see images_list / lamp_form_prompt; a grid of another size fails ' +
       'there with "needs a W×H grid") — or `pngPath`, a PNG file on this computer (≤ 16 MB, ≤ 4096×4096 px) that is ' +
-      'resized to each lamp\'s grid (transparent = off). With `save` (default true) the image is also saved on the lamp ' +
-      `(with \`label\`) and its new \`id\` returned. ${NEEDS_IMAGES} ${PER_LAMP}`,
+      'resized to each lamp\'s grid (transparent = off). This replaces the lamp\'s current drawing (an unsaved drawing ' +
+      'is lost) and stops the playing effect or scene. With `save` (default true) the image is also saved on the lamp ' +
+      '(with `label`) and its `id` returned; an identical image already saved (same size, label and pixels) is reused ' +
+      `(\`reused: true\`) instead of taking a new slot. ${NEEDS_IMAGES} ${PER_LAMP}`,
     inputSchema: {
       lamps: lampsArg,
       pixels: z.array(z.array(colorCell).min(1).max(256)).min(1).max(256).optional().describe('Rows of colours, exactly the lamp grid (h rows of w)'),
@@ -103,21 +105,40 @@ export function registerImagesTools(server: McpServer, ctx: ToolContext): void {
       const rgb = png ? resizeToRgb(png, grid.w, grid.h) : gridToRgb(args.pixels!, grid.w, grid.h);
       await c.sendBinary('POST', '/api/frame', Buffer.from(rgb));
       let id: string | undefined;
-      let warning: string | undefined;
+      let reused = false;
+      let shown = false;
+      const warnings: string[] = [];
       if (args.save) {
-        try {
-          id = (await c.send<{ name?: string }>('POST', '/api/images', lbl ? { label: lbl } : {})).name;
-          if (id) await c.send('POST', `/api/images/${enc(id)}/show`);
-        } catch (e) {
-          if (!(e instanceof LampHttpError && e.status === 409)) throw e;
-          warning = 'drawn but not saved: the lamp\'s image store is full — delete one with image_delete';
+        id = await findSavedImage(c, { w: grid.w, h: grid.h, pixels: rgb, ...(lbl ? { label: lbl } : {}) });
+        reused = !!id;
+        if (!id) {
+          try {
+            id = (await c.send<{ name?: string }>('POST', '/api/images', lbl ? { label: lbl } : {})).name;
+          } catch (e) {
+            if (!(e instanceof LampHttpError && e.status === 409)) throw e;
+            warnings.push('drawn but not saved: the lamp\'s image store is full — delete one with image_delete');
+          }
+        }
+        if (id) {
+          try {
+            await c.send('POST', `/api/images/${enc(id)}/show`);
+            shown = true;
+          } catch (e) {
+            warnings.push(`saved as ${id} but not shown: ${errorText(e)} — try image_show`);
+          }
         }
       }
       if (!id) {
-        if (allows(l, CONTROL)) await c.send('POST', '/api/mode', { mode: 'frame' });
-        else warning = `${warning ? `${warning}; ` : ''}stored as the lamp's frame, but switching to frame mode needs the control permission`;
+        if (allows(l, CONTROL)) { await c.send('POST', '/api/mode', { mode: 'frame' }); shown = true; }
+        else warnings.push('stored as the lamp\'s frame, but switching to frame mode needs the control permission');
       }
-      return { grid, saved: !!id, ...(id ? { id } : {}), ...(lbl && id ? { label: lbl } : {}), ...(warning ? { warning } : {}) };
+      return {
+        grid, saved: !!id, ...(id ? { id, reused } : {}), ...(lbl && id ? { label: lbl } : {}), shown,
+        note: shown
+          ? 'replaced the lamp\'s current drawing (an unsaved drawing is lost) and stopped the playing effect/scene'
+          : 'replaced the lamp\'s stored drawing (an unsaved drawing is lost)',
+        ...(warnings.length ? { warning: warnings.join('; ') } : {}),
+      };
     }) });
   }));
 

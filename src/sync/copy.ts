@@ -3,7 +3,7 @@
  * (mac/Sources/LamposClient/SwarmSync.swift). Used by the image, scene and effect copy tools.
  */
 import type { LampClient } from '../lamp/client';
-import { listing, present, putSource, putTunes } from '../tools/effects';
+import { listing, present, putSource, putTunes } from '../lamp/scripts';
 
 /** A saved lamp state (lampos/docs/protocol.md "Scenes"); every field optional. */
 export interface SceneDoc {
@@ -41,6 +41,16 @@ export async function readImage(c: LampClient, id: string): Promise<{ w: number;
   return { w, h, pixels: new Uint8Array(r.data) };
 }
 
+/** The id of an identical image already saved on the lamp (same size, label and pixels), if any. */
+export async function findSavedImage(c: LampClient, img: ImagePayload): Promise<string | undefined> {
+  const label = img.label || undefined;
+  for (const e of await listImages(c)) {
+    if (e.w !== img.w || e.h !== img.h || (e.label || undefined) !== label) continue;
+    if (same((await readImage(c, e.name)).pixels, img.pixels)) return e.name;
+  }
+  return undefined;
+}
+
 /**
  * Save `img` on the lamp and return its id there. An identical image already saved (same size, label
  * and pixels) is reused, so repeated copies don't fill the lamp's 30 slots. Saving goes through the
@@ -49,10 +59,8 @@ export async function readImage(c: LampClient, id: string): Promise<{ w: number;
  */
 export async function copyImage(c: LampClient, img: ImagePayload): Promise<string> {
   const label = img.label || undefined;
-  for (const e of await listImages(c)) {
-    if (e.w !== img.w || e.h !== img.h || (e.label || undefined) !== label) continue;
-    if (same((await readImage(c, e.name)).pixels, img.pixels)) return e.name;
-  }
+  const existing = await findSavedImage(c, img);
+  if (existing) return existing;
   const previous = await c.getBinary('/api/frame').then((r) => r.data, () => undefined);
   await c.sendBinary('POST', '/api/frame', Buffer.from(img.pixels));
   const restore = async () => {
