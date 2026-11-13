@@ -44,7 +44,9 @@ codex plugin marketplace upgrade plaiiin-lamps
 codex plugin add plaiiin-lamps@plaiiin-lamps
 ```
 
-Then restart the ChatGPT app.
+Then restart the ChatGPT app. If it still shows the old version, remove the plugin and add it again
+(`codex plugin remove plaiiin-lamps@plaiiin-lamps`, then the `add` line above); your lamps and keys
+are kept.
 
 ## Giving ChatGPT access to a lamp
 
