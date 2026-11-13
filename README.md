@@ -30,6 +30,10 @@ codex plugin add plaiiin-lamps@plaiiin-lamps
 Restart the ChatGPT app, open a conversation in **Codex mode**, type `@` and pick
 **PlaiiinLight lamps** — or just say "find my lamps".
 
+No `codex` command on your Mac? The ChatGPT app carries one. Use
+`/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex` in place of `codex` in the
+commands on this page.
+
 You can also do the second step in the app: after adding the marketplace and restarting, open the
 Plugins Directory, choose the **PlaiiinLight** marketplace and install the plugin there.
 
