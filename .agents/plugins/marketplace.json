@@ -1,0 +1,20 @@
+{
+  "name": "plaiiin-lamps",
+  "interface": {
+    "displayName": "PlaiiinLight"
+  },
+  "plugins": [
+    {
+      "name": "plaiiin-lamps",
+      "source": {
+        "source": "local",
+        "path": "./plugin-chatgpt"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Lifestyle"
+    }
+  ]
+}
