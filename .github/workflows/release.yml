@@ -1,0 +1,58 @@
+# Runs on the PUBLIC repo (nebeleben/plaiiin-light-chatgpt). This file lives in public-repo-chatgpt/workflows/ in
+# the private mono-repo and is mirrored to .github/workflows/.
+#
+# Trigger: tag vX.Y.Z, which arrives together with the release commit on main (see ci.yml for what
+# that commit holds). This workflow rebuilds the bundle from the tagged source, fails if it differs
+# from the published one, and only then creates the GitHub Release. It never changes the repo's
+# branches or tags and needs no secret beyond the built-in token.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # create the GitHub Release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Published bundle matches the source
+        run: |
+          # A build from nothing: remove the committed outputs first, so a file the build no
+          # longer writes shows up as deleted.
+          rm -rf plugin-chatgpt/dist plugin-chatgpt/skills plugin-chatgpt/THIRD-PARTY-NOTICES.txt
+          npm run build
+          git diff --exit-code -- plugin-chatgpt \
+            || { echo "::error::the committed bundle differs from a fresh build of this source"; exit 1; }
+          # ...and nothing the build writes may be missing from the commit (--ignored: the
+          # outputs are git-ignored on the source branch, so plain status would not list them).
+          EXTRA="$(git status --porcelain --ignored -- plugin-chatgpt)"
+          [ -z "$EXTRA" ] || { echo "::error::the build writes files that are not in the release: $EXTRA"; exit 1; }
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "plaiiin-lamps ${GITHUB_REF_NAME#v}" --notes-file - <<'EOF'
+          Install (ChatGPT app on macOS, or the codex CLI):
+
+              codex plugin marketplace add nebeleben/plaiiin-light-chatgpt
+              codex plugin add plaiiin-lamps@plaiiin-lamps
+
+          Restart the ChatGPT app, open a chat in Codex mode and pick "PlaiiinLight lamps" with @.
+
+          Update:
+
+              codex plugin marketplace upgrade plaiiin-lamps
+              codex plugin add plaiiin-lamps@plaiiin-lamps
+
+          The bundle in this release was rebuilt from this tag's source by this workflow and found identical.
+          EOF

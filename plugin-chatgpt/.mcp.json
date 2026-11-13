@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "lamps": { "command": "/bin/sh", "args": ["./bin/launch"], "cwd": "." }
+  }
+}

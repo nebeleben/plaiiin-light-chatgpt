@@ -1,0 +1,27 @@
+{
+  "name": "plaiiin-lamps",
+  "version": "0.2.0",
+  "description": "Control, compose for and manage PlaiiinLight lamps on your local network.",
+  "author": { "name": "plaiiin", "url": "https://plaiiin-light.com" },
+  "homepage": "https://github.com/nebeleben/plaiiin-light-chatgpt",
+  "repository": "https://github.com/nebeleben/plaiiin-light-chatgpt",
+  "license": "Apache-2.0",
+  "keywords": ["plaiiinlight", "lamps", "led", "mcp"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "PlaiiinLight lamps",
+    "shortDescription": "Control and compose for your lamps",
+    "longDescription": "Work with the PlaiiinLight lamps on your local network: power, colour and brightness, light effects you describe and preview, pictures, scenes, and firmware updates. Runs on your Mac and talks to the lamps directly; you decide per lamp what the assistant may do.",
+    "developerName": "plaiiin",
+    "category": "Lifestyle",
+    "capabilities": ["Read", "Write"],
+    "logo": "./assets/logo.png",
+    "logoDark": "./assets/logo-dark.png",
+    "composerIcon": "./assets/composer-icon.png",
+    "brandColor": "#FF8A3D",
+    "defaultPrompt": ["Show my lamps", "Compose a new effect for a lamp", "Draw a picture on a lamp"],
+    "websiteURL": "https://plaiiin-light.com/integrations.html#chatgpt",
+    "privacyPolicyURL": "https://plaiiin-light.com/privacy.html"
+  }
+}

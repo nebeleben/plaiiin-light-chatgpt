@@ -1,0 +1,51 @@
+#!/bin/sh
+# Starts the lamp server for the ChatGPT app (and the codex CLI).
+#
+# The app does not start plugins with your shell's PATH, so `node` may not be found by name. This
+# script looks for a Node.js 20 or newer in the places it is likely to be — first the one that
+# ships inside the ChatGPT app, so most people need to install nothing — and runs dist/index.js
+# with it.
+#
+# It also names this plugin's profile: the server then keeps its lamp list in
+# ~/.plaiiin/lamps-chatgpt and its keys under the Keychain service plaiiin-lamp-mcp-chatgpt, apart
+# from any other assistant's. A key you gave to another assistant is not used here.
+set -eu
+
+# CDPATH= : an exported CDPATH would send a relative cd somewhere else.
+CDPATH= cd -- "$(dirname "$0")/.."
+
+PLAIIIN_LAMPS_PROFILE=chatgpt
+export PLAIIIN_LAMPS_PROFILE
+
+app=${PLAIIIN_CHATGPT_APP:-/Applications/ChatGPT.app}
+cache=${XDG_CACHE_HOME:-${HOME:-}/.cache}
+PATH="${PATH:-/usr/bin:/bin}:${PLAIIIN_LAMPS_EXTRA_PATH:-/opt/homebrew/bin:/usr/local/bin}"
+export PATH
+
+# Node.js 20 or newer?
+usable() {
+  [ -n "$1" ] && [ -x "$1" ] || return 1
+  # </dev/null: stdin is the JSON-RPC channel from the host; a probe must not read from it.
+  version=$("$1" --version 2>/dev/null </dev/null) || return 1
+  major=${version#v}
+  major=${major%%.*}
+  case "$major" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  [ "$major" -ge 20 ]
+}
+
+for candidate in \
+  "${CODEX_MCP_NODE_PATH:-}" \
+  "$app/Contents/Resources/cua_node/bin/node" \
+  "${HOME:-}/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node" \
+  "$cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node" \
+  "$(command -v node 2>/dev/null || true)"
+do
+  if usable "$candidate"; then
+    exec "$candidate" dist/index.js
+  fi
+done
+
+printf '%s\n' 'PlaiiinLight lamps: no Node.js 20 or newer found. Install Node.js 20+ (https://nodejs.org) or update the ChatGPT app.' >&2
+exit 127
