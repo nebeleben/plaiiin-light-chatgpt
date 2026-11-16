@@ -22,20 +22,30 @@ lamp, what ChatGPT is allowed to do.
 
 ## Install
 
+### In the ChatGPT app
+
+1. Open **Settings → Plugins** and press **Add** to add a marketplace.
+2. Enter the source `nebeleben/plaiiin-light-chatgpt` and the Git ref `main`. The marketplace is
+   now installed.
+3. Still in **Plugins**, switch from **Public** to **Personal** (right below the page title).
+4. Click the **PlaiiinLight lamps** plugin and press **+ Install plugin**.
+
+Then open a conversation in **Codex mode**, type `@` and pick **PlaiiinLight lamps** — or just say
+"find my lamps".
+
+### From the command line
+
 ```sh
 codex plugin marketplace add nebeleben/plaiiin-light-chatgpt
 codex plugin add plaiiin-lamps@plaiiin-lamps
 ```
 
-Restart the ChatGPT app, open a conversation in **Codex mode**, type `@` and pick
-**PlaiiinLight lamps** — or just say "find my lamps".
+Then restart the ChatGPT app. This is also the way to install it for the `codex` command-line tool
+alone.
 
 No `codex` command on your Mac? The ChatGPT app carries one. Use
 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex` in place of `codex` in the
 commands on this page.
-
-You can also do the second step in the app: after adding the marketplace and restarting, open the
-Plugins Directory, choose the **PlaiiinLight** marketplace and install the plugin there.
 
 ## Update
 

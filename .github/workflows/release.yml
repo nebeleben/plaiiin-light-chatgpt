@@ -42,7 +42,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" --title "plaiiin-lamps ${GITHUB_REF_NAME#v}" --notes-file - <<'EOF'
-          Install (ChatGPT app on macOS, or the codex CLI):
+          Install in the ChatGPT app (macOS): Settings → Plugins → Add, source
+          nebeleben/plaiiin-light-chatgpt, Git ref main; then switch from Public to Personal, open
+          "PlaiiinLight lamps" and press "+ Install plugin".
+
+          Or from the command line (also for the codex CLI alone):
 
               codex plugin marketplace add nebeleben/plaiiin-light-chatgpt
               codex plugin add plaiiin-lamps@plaiiin-lamps
