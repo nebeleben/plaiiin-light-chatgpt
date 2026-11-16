@@ -159,9 +159,12 @@ npm ci && npm run build && git diff --exit-code -- plugin-chatgpt
 
 No output means the published plugin is exactly what this source builds.
 
-The same server is also published as a Claude Code plugin from its own repository,
-[plaiiin-light-claudecode](https://github.com/nebeleben/plaiiin-light-claudecode); the two share
-their version numbers, so a number may be skipped here when only the other one was released.
+The same server is also published as a Claude Code plugin
+([plaiiin-light-claudecode](https://github.com/nebeleben/plaiiin-light-claudecode)) and as an npm
+package for any other MCP program
+([plaiiin-light-mcp](https://github.com/nebeleben/plaiiin-light-mcp)), each from its own
+repository; they share their version numbers, so a number may be skipped here when only another
+one was released.
 
 More on building and testing in [CONTRIBUTING.md](CONTRIBUTING.md).
 
