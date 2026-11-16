@@ -3,6 +3,10 @@
 Control, compose for and manage PlaiiinLight lamps on your local network from the ChatGPT app on
 the Mac (Codex mode) or the `codex` command-line tool.
 
+In the ChatGPT app: **Settings → Plugins → Add**, source `nebeleben/plaiiin-light-chatgpt`, Git ref
+`main`; then switch from **Public** to **Personal**, open **PlaiiinLight lamps** and press
+**+ Install plugin**. Or from the command line:
+
 ```sh
 codex plugin marketplace add nebeleben/plaiiin-light-chatgpt
 codex plugin add plaiiin-lamps@plaiiin-lamps
