@@ -1,7 +1,7 @@
 # plaiiin-lamps — PlaiiinLight lamps for the ChatGPT app
 
-A plugin for the [ChatGPT app](https://chatgpt.com/download) on the Mac that lets ChatGPT work
-with your [PlaiiinLight](https://plaiiin-light.com) lamps from a conversation: switch and colour
+A plugin for the [ChatGPT app](https://chatgpt.com/download) and the `codex` command-line tool that
+lets ChatGPT work with your [PlaiiinLight](https://plaiiin-light.com) lamps from a conversation: switch and colour
 them, write and preview new light effects, draw pictures, save scenes, keep several lamps in step
 and check them for firmware updates.
 
@@ -9,16 +9,23 @@ It runs entirely on your computer and talks to the lamps over your own network. 
 lamp, what ChatGPT is allowed to do.
 
 > **Where it works.** In the ChatGPT app's **Codex mode** and in the `codex` command-line tool —
-> the conversations that run on your Mac. It does **not** work in Chat mode, on the web or on the
+> the conversations that run on your own computer. It does **not** work in Chat mode, on the web or on the
 > phone: those run in OpenAI's cloud, which cannot reach the lamps in your home.
 
 ## Requirements
 
-- **macOS.** Linux and Windows are untested and not released.
+- **macOS or Linux.** It is developed and tested on macOS with the ChatGPT app. On Linux (with the
+  `codex` command-line tool) it runs with two differences, which we have not tested ourselves: lamp
+  keys are kept in a file only you can read instead of the Keychain, and a share link cannot be read
+  from the clipboard — give ChatGPT the link itself or a screenshot of the QR code. On Windows the
+  plugin does not start yet: it is launched through a shell script.
 - The ChatGPT app, or the `codex` command-line tool.
 - A PlaiiinLight lamp with firmware 2.8 or newer, on the same network as your computer.
 - Node.js 20 or newer — only if the ChatGPT app is not installed in `/Applications`. The plugin
   uses the Node.js that ships inside the app when it finds it.
+- No PlaiiinLight app is needed to start: lamps that nobody has paired yet are found on the network
+  and can be used right away. To give ChatGPT access to a lamp that is paired, you need the
+  PlaiiinLight app (macOS, iPhone, iPad or Android) to create a key for it.
 
 ## Install
 
@@ -74,7 +81,8 @@ For a lamp you have paired in the PlaiiinLight app, you create a key for ChatGPT
 5. Create. The app shows a link and a QR code.
 
 Copy the link and tell ChatGPT to add the lamp; it reads the link from the clipboard, so the key
-does not pass through the chat. A saved screenshot of the QR code works too.
+does not pass through the chat. A saved screenshot of the QR code works too. (Reading the clipboard works on macOS; elsewhere use the
+screenshot, or paste the link — a pasted link does pass through the chat.)
 
 The lamp itself enforces these permissions. You can change them, or revoke the key, in the app's
 Share tab at any time. An AI key cannot be used by the apps.
@@ -110,7 +118,8 @@ the chat yourself.
 
 ## Where things are stored
 
-- Keys: the macOS Keychain, service `plaiiin-lamp-mcp-chatgpt`, one entry per lamp.
+- Keys: the macOS Keychain, service `plaiiin-lamp-mcp-chatgpt`, one entry per lamp. On Linux:
+  `~/.plaiiin/lamps-chatgpt/secrets.json`, readable only by you.
 - `~/.plaiiin/lamps-chatgpt/fleet.json` — the lamps this plugin knows. No secrets.
 - `~/.plaiiin/lamps-chatgpt/library/` — effects, images and scenes you saved to the local library.
 
@@ -141,7 +150,7 @@ the chat yourself.
 codex plugin remove plaiiin-lamps@plaiiin-lamps
 codex plugin marketplace remove plaiiin-lamps
 rm -rf ~/.plaiiin/lamps-chatgpt                                   # optional: lamp list and library
-security delete-generic-password -s plaiiin-lamp-mcp-chatgpt      # optional: repeat until none are left
+security delete-generic-password -s plaiiin-lamp-mcp-chatgpt      # optional, macOS: repeat until none are left
 ```
 
 Revoke the AI keys themselves in the app's Share tab.
